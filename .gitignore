@@ -1,0 +1,28 @@
+# Variables de entorno sensibles (HU-SEG-10: NUNCA subir a GitHub)
+.env
+.env.*
+!.env.example
+
+# Dependencias y compilación
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Python bytecode y caché
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+
+# Logs del sistema
+logs/
+*.log
+npm-debug.log*
+
+# Archivos del sistema operativo e IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

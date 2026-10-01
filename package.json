@@ -1,0 +1,32 @@
+{
+  "name": "alerta-ciudadana-backend",
+  "version": "1.0.0",
+  "description": "Servidor Backend en TypeScript para Alerta Ciudadana: Despacho WhatsApp API y Rastreo GPS en Vivo",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts"
+  },
+  "keywords": [
+    "typescript",
+    "emergency",
+    "whatsapp-api",
+    "gps-tracking",
+    "alerta-ciudadana"
+  ],
+  "author": "Alerta Ciudadana",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}
