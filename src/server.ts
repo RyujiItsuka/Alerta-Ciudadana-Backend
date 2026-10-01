@@ -18,8 +18,64 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Almacén en memoria de alertas recibidas
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://emtzprcntefzkvvzmhfk.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtdHpwcmNudGVmemt2dnptaGZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3ODIxNzIsImV4cCI6MjEwNjM1ODE3Mn0.x18Bh68n4ZgtNOyVPwIc01V6aL50oUaXjeXELzlWEh4';
+
+// Almacén en memoria de alertas recibidas en la sesión activa
 const alertStore: Alert[] = [];
+
+/**
+ * Consulta la base de datos Supabase (PostgreSQL) para cargar los reportes persistentes
+ */
+async function fetchSupabaseAlerts(): Promise<Alert[]> {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/reporte?select=id_reporte,descripcion,fecha_hora,tipo_incidencia(nombre),ubicacion(latitud,longitud,direccion_texto),ciudadano(nombres,apellidos,telefono)&order=fecha_hora.desc&limit=50`,
+      {
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+      }
+    );
+
+    if (!res.ok) {
+      console.warn(`[Supabase] No se pudieron cargar alertas: ${res.statusText}`);
+      return [];
+    }
+
+    const data = (await res.json()) as any[];
+    if (!Array.isArray(data)) return [];
+
+    return data.map((item) => {
+      const citizenName = item.ciudadano ? `${item.ciudadano.nombres || ''} ${item.ciudadano.apellidos || ''}`.trim() : undefined;
+      const typeName = item.tipo_incidencia?.nombre || 'EMERGENCIA GENERAL';
+      const lat = item.ubicacion?.latitud ? Number(item.ubicacion.latitud) : -13.7142;
+      const lon = item.ubicacion?.longitud ? Number(item.ubicacion.longitud) : -76.2038;
+      const address = item.ubicacion?.direccion_texto || 'Pisco, Ica - Reporte Móvil';
+
+      return {
+        id: `REP-${item.id_reporte}`,
+        category: typeName,
+        message: item.descripcion || 'Sin descripción',
+        recipientNumber: item.ciudadano?.telefono || EMERGENCY_RECIPIENT,
+        source: 'APP MÓVIL',
+        coordinates: { lat, lon },
+        address,
+        timestamp: item.fecha_hora
+          ? new Date(item.fecha_hora).toLocaleString('es-PE', { timeZone: 'America/Lima' })
+          : new Date().toLocaleString('es-PE'),
+        citizen: citizenName ? {
+          name: citizenName,
+          phone: item.ciudadano?.telefono,
+        } : undefined,
+      };
+    });
+  } catch (err) {
+    console.warn('[Supabase] Error al conectar con la base de datos:', err);
+    return [];
+  }
+}
 
 // ==========================================
 // RUTAS DE LA API (REST ENDPOINTS)
@@ -28,11 +84,13 @@ const alertStore: Alert[] = [];
 /**
  * Health check del servidor
  */
-app.get('/api/health', (req: Request, res: Response) => {
+app.get('/api/health', async (req: Request, res: Response) => {
+  const dbAlerts = await fetchSupabaseAlerts();
   res.json({
     status: 'healthy',
     service: 'alerta_ciudadana_backend_typescript',
     emergencyNumber: EMERGENCY_RECIPIENT,
+    databaseAlertsCount: dbAlerts.length,
     activeAlertsCount: alertStore.length,
     activeTrackingCount: TrackingService.getActiveCount(),
     timestamp: new Date().toISOString(),
@@ -40,12 +98,14 @@ app.get('/api/health', (req: Request, res: Response) => {
 });
 
 /**
- * Obtener lista de alertas registradas
+ * Obtener lista de alertas registradas (Supabase DB + sesión activa)
  */
-app.get('/api/alerts', (req: Request, res: Response) => {
+app.get('/api/alerts', async (req: Request, res: Response) => {
+  const dbAlerts = await fetchSupabaseAlerts();
+  const allAlerts = [...alertStore, ...dbAlerts.filter(d => !alertStore.some(a => a.id === d.id))];
   res.json({
-    count: alertStore.length,
-    alerts: [...alertStore].reverse(),
+    count: allAlerts.length,
+    alerts: allAlerts,
   });
 });
 
@@ -218,10 +278,12 @@ app.get('/tracking/:alertId', (req: Request, res: Response) => {
 });
 
 /**
- * Panel de Monitoreo de la Central de Video Vigilancia
+ * Panel de Monitoreo de la Central de Video Vigilancia (Muestra alertas de Supabase y en vivo)
  */
-app.get(['/', '/dashboard'], (req: Request, res: Response) => {
-  const html = renderDashboardHtml(alertStore, EMERGENCY_RECIPIENT);
+app.get(['/', '/dashboard'], async (req: Request, res: Response) => {
+  const dbAlerts = await fetchSupabaseAlerts();
+  const allAlerts = [...alertStore, ...dbAlerts.filter(d => !alertStore.some(a => a.id === d.id))];
+  const html = renderDashboardHtml(allAlerts, EMERGENCY_RECIPIENT);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 });
