@@ -223,8 +223,28 @@ serve(async (req) => {
         lastName,
       } = body;
 
-      const cleanFirstName = (nombres || firstName || first_name || name || '').trim();
-      const cleanLastName = (apellidos || lastName || last_name || '').trim();
+      let cleanFirstName = (nombres || firstName || first_name || '').trim();
+      let cleanLastName = (apellidos || lastName || last_name || '').trim();
+
+      // Si no se pasaron apellidos separados y solo vino un nombre completo
+      if (!cleanLastName && (name || cleanFirstName)) {
+        const full = (name || cleanFirstName).trim();
+        const parts = full.split(/\s+/);
+        if (parts.length >= 4) {
+          cleanFirstName = parts.slice(0, 2).join(' ');
+          cleanLastName = parts.slice(2).join(' ');
+        } else if (parts.length === 3) {
+          cleanFirstName = parts.slice(0, 1).join(' ');
+          cleanLastName = parts.slice(1).join(' ');
+        } else if (parts.length === 2) {
+          cleanFirstName = parts[0];
+          cleanLastName = parts[1];
+        } else {
+          cleanFirstName = full;
+        }
+      } else if (!cleanFirstName && name) {
+        cleanFirstName = name.trim();
+      }
 
       // Verificar OTP si fue proporcionado
       if (otpCode) {
