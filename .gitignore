@@ -26,3 +26,6 @@ npm-debug.log*
 Thumbs.db
 .vscode/
 .idea/
+
+# Artefactos locales de la CLI de Supabase (nunca versionar)
+supabase/.temp/

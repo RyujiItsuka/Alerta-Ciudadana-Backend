@@ -16,7 +16,7 @@
 // Acciones (?action=...):
 //   send-otp, verify-otp, register, login, logout, revoke-session,
 //   verify-token, reset-password, update-pin, find-user, login-staff,
-//   staff-save, staff-delete
+//   staff-save, staff-delete, get-config, set-config
 // ==============================================================================
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -872,6 +872,76 @@ serve(async (req) => {
         return json({ valid: false, error: "Sesión revocada por reporte de robo" }, 403);
       }
       return json({ valid: true, payload });
+    }
+
+    // =========================================================================
+    // 10. CONFIGURACIÓN DEL SISTEMA (parámetros editables sin actualizar el APK)
+    //     Tabla configuracion_sistema (RLS cerrado => sólo service_role).
+    //     get-config: lectura para el panel. set-config: requiere admin.
+    // =========================================================================
+    if (action === "get-config") {
+      const caller = await requireStaffAdmin(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión de administrador." },
+          401,
+        );
+      }
+      const { data, error } = await supabase
+        .from("configuracion_sistema")
+        .select("clave, valor");
+      if (error) return json({ success: false, error: error.message }, 500);
+      const config: Record<string, string> = {};
+      for (const row of data ?? []) {
+        config[String(row.clave)] = String(row.valor ?? "");
+      }
+      return json({ success: true, config });
+    }
+
+    if (action === "set-config") {
+      const caller = await requireStaffAdmin(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión de administrador." },
+          401,
+        );
+      }
+
+      const clave = String(body?.clave ?? "").trim();
+      let valor = body?.valor === undefined || body?.valor === null
+        ? ""
+        : String(body.valor).trim();
+
+      if (!/^[a-z0-9_.]{1,64}$/.test(clave)) {
+        return json({ success: false, error: "Clave de configuración inválida." }, 400);
+      }
+
+      // Validación específica del número de la Central: se guarda solo dígitos
+      // con código de país, tal como lo espera el despacho (51976264949).
+      if (clave === "whatsapp_central") {
+        const digitos = valor.replace(/[^0-9]/g, "");
+        if (digitos.length < 8 || digitos.length > 15) {
+          return json(
+            { success: false, error: "Número de WhatsApp inválido. Formato esperado: 51976264949." },
+            400,
+          );
+        }
+        valor = digitos;
+      }
+
+      const { error } = await supabase
+        .from("configuracion_sistema")
+        .upsert(
+          {
+            clave,
+            valor,
+            actualizado_por: caller.usuario,
+            actualizado_en: new Date().toISOString(),
+          },
+          { onConflict: "clave" },
+        );
+      if (error) return json({ success: false, error: error.message }, 500);
+      return json({ success: true, clave, valor });
     }
 
     return json({ success: false, error: "Acción no válida" }, 400);
