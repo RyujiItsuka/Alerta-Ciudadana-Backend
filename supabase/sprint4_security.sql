@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS codigo_otp (
     codigo VARCHAR(6) NOT NULL,
     expira_en TIMESTAMPTZ NOT NULL, -- Validez de 5 minutos
     usado BOOLEAN NOT NULL DEFAULT FALSE,
+    intentos INT NOT NULL DEFAULT 0, -- Intentos fallidos de verificación (anti fuerza bruta)
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_otp_dni_tel ON codigo_otp(dni, telefono, expira_en);
@@ -47,6 +48,38 @@ CREATE TABLE IF NOT EXISTS sesion_usuario (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_sesion_dni ON sesion_usuario(dni, revocado, expira_en);
+
+-- ==============================================================================
+-- PARCHE DE COMPATIBILIDAD (idempotente): si alguna de estas tablas ya existía
+-- de una versión anterior, agrega las columnas que usa el resto del script para
+-- evitar "column ... does not exist".
+-- ==============================================================================
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS dni VARCHAR(15);
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS nombres VARCHAR(100);
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS apellidos VARCHAR(100) DEFAULT '';
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS telefono VARCHAR(20);
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS direccion VARCHAR(255);
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS pin_hash VARCHAR(255);
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS rol VARCHAR(20) DEFAULT 'ciudadano';
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS intentos_fallidos INT NOT NULL DEFAULT 0;
+ALTER TABLE persona ADD COLUMN IF NOT EXISTS bloqueado_hasta TIMESTAMPTZ;
+-- Necesario para el "ON CONFLICT (dni)" del usuario de prueba.
+CREATE UNIQUE INDEX IF NOT EXISTS persona_dni_uidx ON persona(dni);
+
+ALTER TABLE codigo_otp ADD COLUMN IF NOT EXISTS dni VARCHAR(15);
+ALTER TABLE codigo_otp ADD COLUMN IF NOT EXISTS telefono VARCHAR(20);
+ALTER TABLE codigo_otp ADD COLUMN IF NOT EXISTS codigo VARCHAR(6);
+ALTER TABLE codigo_otp ADD COLUMN IF NOT EXISTS expira_en TIMESTAMPTZ;
+ALTER TABLE codigo_otp ADD COLUMN IF NOT EXISTS usado BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE codigo_otp ADD COLUMN IF NOT EXISTS intentos INT NOT NULL DEFAULT 0;
+
+ALTER TABLE sesion_usuario ADD COLUMN IF NOT EXISTS id_persona BIGINT;
+ALTER TABLE sesion_usuario ADD COLUMN IF NOT EXISTS dni VARCHAR(15);
+ALTER TABLE sesion_usuario ADD COLUMN IF NOT EXISTS token_jwt TEXT;
+ALTER TABLE sesion_usuario ADD COLUMN IF NOT EXISTS dispositivo_info VARCHAR(255);
+ALTER TABLE sesion_usuario ADD COLUMN IF NOT EXISTS revocado BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sesion_usuario ADD COLUMN IF NOT EXISTS expira_en TIMESTAMPTZ;
 
 -- 5. Tabla TIPO_INCIDENCIA
 CREATE TABLE IF NOT EXISTS tipo_incidencia (
@@ -153,21 +186,34 @@ SELECT setval(pg_get_serial_sequence('estado_reporte', 'id_estado'), (SELECT MAX
 
 -- ==============================================================================
 -- USUARIO DE PRUEBA OFICIAL (HU-SEG-06: Hashes Bcrypt costo 10 con pgcrypto)
+-- ⚠️ SEGURIDAD: sin credenciales hardcodeadas. Reemplace los marcadores por
+--    una contraseña y un PIN propios antes de ejecutar; el bloque aborta si
+--    no se reemplazaron.
 -- ==============================================================================
-INSERT INTO persona (dni, nombres, apellidos, telefono, direccion, password_hash, pin_hash, rol)
-VALUES (
-    '12345678',
-    'Juan',
-    'Pérez Test',
-    '+51987654321',
-    'Av. San Martín 123, Pisco',
-    crypt('Alerta2026!', gen_salt('bf', 10)),
-    crypt('1234', gen_salt('bf', 10)),
-    'ciudadano'
-)
-ON CONFLICT (dni) DO UPDATE
-SET 
-    password_hash = crypt('Alerta2026!', gen_salt('bf', 10)),
-    pin_hash = crypt('1234', gen_salt('bf', 10)),
-    intentos_fallidos = 0,
-    bloqueado_hasta = NULL;
+DO $$
+DECLARE
+    v_password text := 'CAMBIAR_ESTA_CLAVE_ANTES_DE_EJECUTAR';
+    v_pin      text := 'CAMBIAR';
+BEGIN
+    IF v_password = 'CAMBIAR_ESTA_CLAVE_ANTES_DE_EJECUTAR' OR v_pin = 'CAMBIAR' THEN
+        RAISE EXCEPTION 'Edite sprint4_security.sql y reemplace la contraseña y el PIN del usuario de prueba antes de ejecutarlo.';
+    END IF;
+
+    INSERT INTO persona (dni, nombres, apellidos, telefono, direccion, password_hash, pin_hash, rol)
+    VALUES (
+        '12345678',
+        'Juan',
+        'Pérez Test',
+        '+51987654321',
+        'Av. San Martín 123, Pisco',
+        crypt(v_password, gen_salt('bf', 10)),
+        crypt(v_pin, gen_salt('bf', 10)),
+        'ciudadano'
+    )
+    ON CONFLICT (dni) DO UPDATE
+    SET
+        password_hash = EXCLUDED.password_hash,
+        pin_hash = EXCLUDED.pin_hash,
+        intentos_fallidos = 0,
+        bloqueado_hasta = NULL;
+END $$;

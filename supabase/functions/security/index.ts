@@ -15,7 +15,8 @@
 //
 // Acciones (?action=...):
 //   send-otp, verify-otp, register, login, logout, revoke-session,
-//   verify-token, reset-password, update-pin, find-user
+//   verify-token, reset-password, update-pin, find-user, login-staff,
+//   staff-save, staff-delete
 // ==============================================================================
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -126,6 +127,80 @@ function json(body: unknown, status = 200): Response {
 // respuestas genéricas (solo se usan internamente para verificar).
 const SAFE_PERSONA_FIELDS = "id_persona,dni,nombres,apellidos,telefono,rol";
 
+// Campos de operador_central que puede devolver la Edge Function. NUNCA incluye
+// password_hash, para que el navegador no reciba hashes de credenciales.
+const SAFE_STAFF_FIELDS =
+  "id_operador,usuario,nombres,apellidos,telefono,rol,turno,estado,created_at,ultimo_acceso";
+
+// Máximo de intentos fallidos permitidos por código OTP antes de quemarlo
+// (frena la fuerza bruta sobre un código de solo 6 dígitos).
+const MAX_OTP_ATTEMPTS = 5;
+
+// Verifica una contraseña contra el hash almacenado en una tabla de personal
+// (cuenta_soporte / operador_central / persona). Si el valor almacenado es un
+// hash bcrypt se compara; si es una credencial legada en texto plano se compara
+// y, al coincidir, se re-hashea con bcrypt en el momento (migración transparente).
+async function verifyPasswordWithMigration(
+  table: string,
+  idColumn: string,
+  idValue: unknown,
+  plain: string,
+  stored: unknown,
+): Promise<boolean> {
+  const storedStr = typeof stored === "string" ? stored : "";
+  if (!storedStr) return false;
+  if (isBcryptHash(storedStr)) {
+    return await compareBcrypt(plain, storedStr);
+  }
+  if (plain === storedStr) {
+    try {
+      await supabase
+        .from(table)
+        .update({ password_hash: await hashBcrypt(plain) })
+        .eq(idColumn, idValue);
+    } catch (e) {
+      console.warn(`No se pudo re-hashear ${table}.${idColumn}:`, e);
+    }
+    return true;
+  }
+  return false;
+}
+
+function fullName(nombres: unknown, apellidos: unknown, fallback: string): string {
+  const name = `${nombres ?? ""} ${apellidos ?? ""}`.trim();
+  return name || fallback;
+}
+
+// Emite el token de sesión de staff del panel web (scope "staff"). Se firma con
+// JWT_SECRET_KEY y viaja en el cuerpo de las acciones administrativas.
+async function issueStaffToken(session: {
+  id: string;
+  usuario: string;
+  rol: string;
+}): Promise<string> {
+  const exp = Math.floor(Date.now() / 1000) + 8 * 60 * 60; // 8 horas
+  return await generateJWT({
+    scope: "staff",
+    usuario: session.usuario,
+    rol: session.rol,
+    id: session.id,
+    exp,
+  });
+}
+
+// Autoriza una acción administrativa: exige un token de staff válido con rol
+// administrador o superadmin. Evita que un técnico (o un anónimo) cree o
+// modifique cuentas privilegiadas directamente contra la base de datos.
+async function requireStaffAdmin(
+  token: unknown,
+): Promise<{ usuario: string; rol: string } | null> {
+  const claims = token ? await verifyJWT(String(token)) : null;
+  if (!claims || claims.scope !== "staff") return null;
+  const rol = String(claims.rol ?? "").toLowerCase();
+  if (rol !== "administrador" && rol !== "superadmin") return null;
+  return { usuario: String(claims.usuario ?? ""), rol };
+}
+
 // Envía el OTP por la Edge Function "whatsapp" (token de Green API en el servidor).
 async function sendOtpByWhatsApp(phone: string, code: string): Promise<void> {
   const message =
@@ -161,8 +236,10 @@ serve(async (req) => {
 
   try {
     const url = new URL(req.url);
-    const action = url.searchParams.get("action") || "";
     const body = await req.json().catch(() => ({}));
+    // La acción puede venir por querystring (?action=...) o en el cuerpo JSON
+    // (más cómodo para `supabase.functions.invoke` desde el panel web).
+    const action = url.searchParams.get("action") || String(body?.action ?? "");
 
     // =========================================================================
     // 1. HU-SEG-01: ENVÍO DE CÓDIGO OTP (6 dígitos, válido 5 min)
@@ -174,6 +251,25 @@ serve(async (req) => {
       }
       let cleanPhone = String(phone).replace(/[^0-9]/g, "");
       if (cleanPhone.length === 9) cleanPhone = `51${cleanPhone}`;
+
+      // SEGURIDAD: si el DNI ya está registrado, el OTP SOLO puede enviarse al
+      // teléfono registrado. Sin esta validación un tercero podría pedir el
+      // código para el DNI de la víctima y recibirlo en su propio celular,
+      // obteniendo así la autorización para restablecer su contraseña.
+      const { data: personaDestino } = await supabase
+        .from("persona")
+        .select("telefono")
+        .eq("dni", dni)
+        .maybeSingle();
+      if (personaDestino) {
+        const telefonoRegistrado = String(personaDestino.telefono ?? "").replace(/[^0-9]/g, "");
+        if (telefonoRegistrado !== cleanPhone) {
+          return json({
+            success: false,
+            error: "El número no coincide con el registrado para este DNI. Contacte a la central.",
+          }, 403);
+        }
+      }
 
       const rnd = new Uint32Array(1);
       crypto.getRandomValues(rnd);
@@ -207,17 +303,40 @@ serve(async (req) => {
       if (cleanPhone.length === 9) cleanPhone = `51${cleanPhone}`;
 
       const now = new Date().toISOString();
-      const { data: otps, error } = await supabase
+      let otpQuery = supabase
         .from("codigo_otp")
         .select("*")
         .eq("dni", dni)
         .eq("codigo", code)
         .eq("usado", false)
-        .gt("expira_en", now)
+        .gt("expira_en", now);
+      if (cleanPhone) {
+        // Defensa en profundidad: el código solo vale para el teléfono al que
+        // fue enviado (que ya está forzado a ser el registrado en send-otp).
+        otpQuery = otpQuery.eq("telefono", cleanPhone);
+      }
+      const { data: otps, error } = await otpQuery
         .order("created_at", { ascending: false })
         .limit(1);
 
       if (error || !otps || otps.length === 0) {
+        // Anti fuerza bruta: cada fallo suma. Al llegar al máximo se quema el
+        // código activo y el usuario debe solicitar uno nuevo por WhatsApp.
+        const { data: activos } = await supabase
+          .from("codigo_otp")
+          .select("id_otp,intentos")
+          .eq("dni", dni)
+          .eq("usado", false)
+          .gt("expira_en", now)
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (activos && activos.length > 0) {
+          const intentos = Number(activos[0].intentos ?? 0) + 1;
+          await supabase
+            .from("codigo_otp")
+            .update({ intentos, usado: intentos >= MAX_OTP_ATTEMPTS })
+            .eq("id_otp", activos[0].id_otp);
+        }
         return json({
           success: false,
           error: "Código inválido o expirado (límite 5 min).",
@@ -225,7 +344,22 @@ serve(async (req) => {
       }
 
       await supabase.from("codigo_otp").update({ usado: true }).eq("id_otp", otps[0].id_otp);
-      return json({ success: true, message: "Número verificado correctamente." });
+
+      // Prueba criptográfica de corta duración: autoriza el cambio de contraseña
+      // sin permitir reutilizar el OTP (ya quedó consumido). Se firma con
+      // JWT_SECRET_KEY y solo vale para este DNI y este propósito.
+      const resetExp = Math.floor(Date.now() / 1000) + 10 * 60;
+      const resetToken = await generateJWT({
+        dni,
+        scope: "password-reset",
+        exp: resetExp,
+      });
+
+      return json({
+        success: true,
+        message: "Número verificado correctamente.",
+        resetToken,
+      });
     }
 
     // =========================================================================
@@ -384,7 +518,9 @@ serve(async (req) => {
         expira_en: new Date(exp * 1000).toISOString(),
       });
 
-      // El PIN se devuelve para el desbloqueo local en el propio dispositivo.
+      // No se devuelve pin_hash ni password_hash: el cliente nunca debe recibir
+      // material de credenciales. El desbloqueo local usa el PIN propio del
+      // dispositivo (SessionService), no el hash del servidor.
       return json({
         success: true,
         token,
@@ -394,9 +530,136 @@ serve(async (req) => {
           nombres: persona.nombres,
           apellidos: persona.apellidos || "",
           telefono: persona.telefono,
-          pin_hash: persona.pin_hash,
         },
       });
+    }
+
+    // =========================================================================
+    // 4-bis. LOGIN DEL PANEL WEB (SOPORTE / ADMINISTRADORES / TÉCNICOS)
+    //    Autenticación 100% en el servidor con bcrypt (service_role). Sin
+    //    contraseñas maestras, sin comparaciones en texto plano y sin exponer
+    //    hashes al navegador. Reemplaza la validación client-side del panel.
+    // =========================================================================
+    if (action === "login-staff") {
+      const usuario = String(body?.usuario ?? body?.dni ?? "").trim();
+      const password = String(body?.password ?? "");
+      if (!usuario || !password) {
+        return json({ success: false, error: "Usuario y contraseña son obligatorios." }, 400);
+      }
+
+      // Fase A: Superadmin (cuenta_soporte)
+      const { data: soporte } = await supabase
+        .from("cuenta_soporte")
+        .select("id_soporte,usuario,nombres,apellidos,password_hash")
+        .eq("usuario", usuario)
+        .maybeSingle();
+
+      if (soporte) {
+        const ok = await verifyPasswordWithMigration(
+          "cuenta_soporte",
+          "id_soporte",
+          soporte.id_soporte,
+          password,
+          soporte.password_hash,
+        );
+        if (!ok) {
+          return json({ success: false, error: "Contraseña incorrecta." }, 401);
+        }
+        await supabase
+          .from("cuenta_soporte")
+          .update({ ultimo_acceso: new Date().toISOString() })
+          .eq("id_soporte", soporte.id_soporte);
+        const session = {
+          id: `SOP-${soporte.id_soporte}`,
+          nombre: fullName(soporte.nombres, soporte.apellidos, usuario),
+          usuario: soporte.usuario,
+          rol: "superadmin",
+          cargo: "Soporte Técnico & Desarrollador",
+        };
+        return json({ success: true, session, token: await issueStaffToken(session) });
+      }
+
+      // Fase B: Administrador o Técnico (operador_central)
+      const { data: operador } = await supabase
+        .from("operador_central")
+        .select("id_operador,usuario,nombres,apellidos,password_hash,rol,estado")
+        .eq("usuario", usuario)
+        .maybeSingle();
+
+      if (operador) {
+        if (operador.estado === "suspendido" || operador.estado === "inactivo") {
+          return json({ success: false, error: "Tu cuenta se encuentra suspendida o inactiva." }, 403);
+        }
+        const ok = await verifyPasswordWithMigration(
+          "operador_central",
+          "id_operador",
+          operador.id_operador,
+          password,
+          operador.password_hash,
+        );
+        if (!ok) {
+          return json({ success: false, error: "Contraseña incorrecta." }, 401);
+        }
+        const rawRol = String(operador.rol ?? "").toLowerCase().trim();
+        const rol = rawRol === "admin" || rawRol === "administrador" ? "administrador" : "tecnico";
+        await supabase
+          .from("operador_central")
+          .update({ ultimo_acceso: new Date().toISOString() })
+          .eq("id_operador", operador.id_operador);
+        const session = {
+          id: `OP-${operador.id_operador}`,
+          nombre: fullName(operador.nombres, operador.apellidos, operador.usuario),
+          usuario: operador.usuario,
+          rol,
+          cargo: rol === "administrador"
+            ? "Administrador General de Central"
+            : "Técnico de Central de Alertas",
+        };
+        return json({ success: true, session, token: await issueStaffToken(session) });
+      }
+
+      // Fase C: Personal migrado que aún vive en la tabla persona
+      const numericUsuario = usuario.replace(/\D/g, "");
+      if (numericUsuario) {
+        const { data: persona } = await supabase
+          .from("persona")
+          .select("id_persona,dni,nombres,apellidos,password_hash,rol")
+          .or(`dni.eq.${numericUsuario},telefono.eq.${numericUsuario}`)
+          .maybeSingle();
+
+        if (persona) {
+          const rolBd = String(persona.rol ?? "").toLowerCase().trim();
+          if (rolBd === "ciudadano") {
+            return json({
+              success: false,
+              error: "Acceso denegado: tu cuenta es de Ciudadano y solo está autorizada para la App Móvil.",
+            }, 403);
+          }
+          const ok = await verifyPasswordWithMigration(
+            "persona",
+            "id_persona",
+            persona.id_persona,
+            password,
+            persona.password_hash,
+          );
+          if (!ok) {
+            return json({ success: false, error: "Contraseña incorrecta." }, 401);
+          }
+          const rol = rolBd === "admin" || rolBd === "administrador" ? "administrador" : "tecnico";
+          const session = {
+            id: `${rol === "administrador" ? "ADM" : "TEC"}-${persona.id_persona}`,
+            nombre: fullName(persona.nombres, persona.apellidos, "Operador"),
+            usuario: persona.dni || String(persona.id_persona),
+            rol,
+            cargo: rol === "administrador"
+              ? "Administrador General de Central"
+              : "Técnico de Central de Alertas",
+          };
+          return json({ success: true, session, token: await issueStaffToken(session) });
+        }
+      }
+
+      return json({ success: false, error: "Usuario o contraseña incorrectos." }, 401);
     }
 
     // =========================================================================
@@ -412,10 +675,21 @@ serve(async (req) => {
     // 6. RESET DE CONTRASEÑA (bcrypt) — reemplaza el PATCH directo en claro
     // =========================================================================
     if (action === "reset-password") {
-      const { dni, password } = body;
+      const { dni, password, token } = body;
       if (!dni || !password || String(password).length < 6) {
         return json({ success: false, error: "La nueva contraseña debe tener al menos 6 caracteres." }, 400);
       }
+
+      // AUTORIZACIÓN OBLIGATORIA: sin prueba de que se verificó el OTP (el
+      // resetToken firmado) no se puede cambiar la contraseña de nadie.
+      const claims = token ? await verifyJWT(String(token)) : null;
+      if (!claims || claims.scope !== "password-reset" || String(claims.dni) !== String(dni)) {
+        return json(
+          { success: false, error: "No autorizado: verifique el código OTP enviado a su WhatsApp." },
+          401,
+        );
+      }
+
       const hash = await hashBcrypt(String(password));
       const { data: updated, error } = await supabase
         .from("persona")
@@ -432,10 +706,18 @@ serve(async (req) => {
     // 7. ACTUALIZACIÓN DE PIN (bcrypt)
     // =========================================================================
     if (action === "update-pin") {
-      const { dni, pin } = body;
+      const { dni, pin, token } = body;
       if (!dni || !/^\d{4}$/.test(String(pin ?? ""))) {
         return json({ success: false, error: "El PIN debe tener 4 dígitos." }, 400);
       }
+
+      // El cambio de PIN exige una sesión válida del propio usuario (JWT de
+      // login). Evita que un tercero modifique el PIN de otra cuenta por DNI.
+      const claims = token ? await verifyJWT(String(token)) : null;
+      if (!claims || String(claims.dni) !== String(dni)) {
+        return json({ success: false, error: "No autorizado: inicie sesión nuevamente." }, 401);
+      }
+
       const pinHash = await hashBcrypt(String(pin));
       const { error } = await supabase
         .from("persona")
@@ -446,15 +728,123 @@ serve(async (req) => {
     }
 
     // =========================================================================
+    // 7-bis. GESTIÓN DE PERSONAL (operador_central) — bcrypt + autorización
+    //    Reemplaza el INSERT/UPDATE del panel web que guardaba la contraseña en
+    //    TEXTO PLANO y sin verificar el rol. La contraseña se hashea con bcrypt
+    //    usando service_role; un técnico no puede crear ni ascender cuentas.
+    // =========================================================================
+    if (action === "staff-save") {
+      const caller = await requireStaffAdmin(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión de administrador." },
+          401,
+        );
+      }
+
+      const usuario = String(body?.usuario ?? "").trim();
+      const nombres = String(body?.nombres ?? "").trim();
+      const apellidos = String(body?.apellidos ?? "").trim();
+      const telefono = String(body?.telefono ?? "").trim();
+      const rolRaw = String(body?.rol ?? "tecnico").toLowerCase().trim();
+      const rol = rolRaw === "admin" || rolRaw === "administrador" ? "administrador" : "tecnico";
+      const turno = String(body?.turno ?? (rol === "administrador" ? "Rotativo" : "Mañana"));
+      const estado = String(body?.estado ?? "activo");
+      const password = body?.password ? String(body.password) : "";
+
+      if (!usuario || !nombres || !apellidos) {
+        return json({ success: false, error: "Usuario, nombres y apellidos son obligatorios." }, 400);
+      }
+      if (password && password.length < 6) {
+        return json({ success: false, error: "La contraseña debe tener al menos 6 caracteres." }, 400);
+      }
+      // Los administradores SOLO los gestiona el superadmin (evita que un admin
+      // se auto-promocione o cree pares privilegiados).
+      if (rol === "administrador" && caller.rol !== "superadmin") {
+        return json({ success: false, error: "Solo el superadmin puede gestionar administradores." }, 403);
+      }
+
+      const { data: existente } = await supabase
+        .from("operador_central")
+        .select("id_operador,rol")
+        .eq("usuario", usuario)
+        .maybeSingle();
+
+      if (
+        existente &&
+        String(existente.rol ?? "").toLowerCase().startsWith("admin") &&
+        caller.rol !== "superadmin"
+      ) {
+        return json({ success: false, error: "Solo el superadmin puede modificar administradores." }, 403);
+      }
+
+      const record: Record<string, unknown> = { usuario, nombres, apellidos, telefono, rol, turno, estado };
+      if (password) {
+        record.password_hash = await hashBcrypt(password);
+      } else if (!existente) {
+        return json({ success: false, error: "La contraseña es obligatoria al crear un usuario." }, 400);
+      }
+
+      if (existente) {
+        const { data, error } = await supabase
+          .from("operador_central")
+          .update(record)
+          .eq("id_operador", existente.id_operador)
+          .select(SAFE_STAFF_FIELDS)
+          .single();
+        if (error) return json({ success: false, error: "No se pudo actualizar el usuario." }, 400);
+        return json({ success: true, user: data, created: false });
+      }
+
+      const { data, error } = await supabase
+        .from("operador_central")
+        .insert(record)
+        .select(SAFE_STAFF_FIELDS)
+        .single();
+      if (error) {
+        return json({ success: false, error: "No se pudo crear el usuario (¿usuario duplicado?)." }, 400);
+      }
+      return json({ success: true, user: data, created: true }, 201);
+    }
+
+    if (action === "staff-delete") {
+      const caller = await requireStaffAdmin(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión de administrador." },
+          401,
+        );
+      }
+      const usuario = String(body?.usuario ?? "").trim();
+      if (!usuario) return json({ success: false, error: "Usuario obligatorio." }, 400);
+
+      const { data: objetivo } = await supabase
+        .from("operador_central")
+        .select("rol")
+        .eq("usuario", usuario)
+        .maybeSingle();
+      if (
+        objetivo &&
+        String(objetivo.rol ?? "").toLowerCase().startsWith("admin") &&
+        caller.rol !== "superadmin"
+      ) {
+        return json({ success: false, error: "Solo el superadmin puede eliminar administradores." }, 403);
+      }
+
+      const { error } = await supabase.from("operador_central").delete().eq("usuario", usuario);
+      if (error) return json({ success: false, error: "No se pudo eliminar el usuario." }, 400);
+      return json({ success: true });
+    }
+
+    // =========================================================================
     // 8. BÚSQUEDA SEGURA DE USUARIO POR DNI (sin exponer hashes al cliente)
-    //    Devuelve pin_hash SOLO como referencia local de desbloqueo del dueño.
     // =========================================================================
     if (action === "find-user") {
       const { dni } = body;
       if (!dni) return json({ success: false, error: "DNI obligatorio." }, 400);
       const { data: persona, error } = await supabase
         .from("persona")
-        .select(`${SAFE_PERSONA_FIELDS},pin_hash`)
+        .select(SAFE_PERSONA_FIELDS)
         .eq("dni", dni)
         .maybeSingle();
       if (error || !persona) {

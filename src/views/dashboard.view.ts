@@ -1,29 +1,40 @@
 import { Alert } from '../types/index.js';
 
+/** Escapa texto para insertarlo de forma segura en HTML (evita XSS almacenado). */
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function renderDashboardHtml(alerts: Alert[], emergencyRecipient: string): string {
   let alertsRows = '';
 
   const recentAlerts = [...alerts].reverse().slice(0, 25);
   for (const a of recentAlerts) {
-    const srcBadge = `<span style="background:#dc2626;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold;">${(a.source || 'BOTÓN UI').toUpperCase()}</span>`;
-    
+    const srcBadge = `<span style="background:#dc2626;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold;">${escapeHtml((a.source || 'BOTÓN UI').toUpperCase())}</span>`;
+
+    const categoryUpper = a.category.toUpperCase();
     let trackingAction = '<span style="color:#22c55e;font-weight:bold;">ENVIADO (API)</span>';
-    if (a.category.toUpperCase() === 'ROBO') {
+    if (categoryUpper === 'ROBO' || categoryUpper === 'SECUESTRO') {
       trackingAction = `
         <div style="display:flex; flex-direction:column; gap:4px;">
             <span style="color:#22c55e;font-weight:bold;">ENVIADO (API)</span>
-            <a href="/tracking/${a.id}" target="_blank" style="background:#ef4444; color:white; padding:4px 8px; border-radius:4px; text-decoration:none; font-size:11px; font-weight:bold; display:inline-block; text-align:center;">🔴 RASTREAR RUTA</a>
+            <a href="/tracking/${encodeURIComponent(a.id)}" target="_blank" style="background:#ef4444; color:white; padding:4px 8px; border-radius:4px; text-decoration:none; font-size:11px; font-weight:bold; display:inline-block; text-align:center;">🔴 RASTREAR RUTA</a>
         </div>
       `;
     }
 
     alertsRows += `
       <tr style="border-bottom: 1px solid #1f2937;">
-          <td style="padding:10px;color:#9ca3af;">${a.timestamp}</td>
-          <td style="padding:10px;font-weight:bold;color:#f87171;">${a.category}</td>
+          <td style="padding:10px;color:#9ca3af;">${escapeHtml(a.timestamp)}</td>
+          <td style="padding:10px;font-weight:bold;color:#f87171;">${escapeHtml(a.category)}</td>
           <td style="padding:10px;">${srcBadge}</td>
-          <td style="padding:10px;color:#38bdf8;">+${a.recipientNumber}</td>
-          <td style="padding:10px;color:#e5e7eb;font-family:monospace;font-size:12px;">${a.message.replace(/\\n/g, '<br>')}</td>
+          <td style="padding:10px;color:#38bdf8;">+${escapeHtml(a.recipientNumber)}</td>
+          <td style="padding:10px;color:#e5e7eb;font-family:monospace;font-size:12px;">${escapeHtml(a.message).replace(/\n/g, '<br>')}</td>
           <td style="padding:10px;">${trackingAction}</td>
       </tr>
     `;
@@ -57,7 +68,7 @@ export function renderDashboardHtml(alerts: Alert[], emergencyRecipient: string)
         </div>
         <div>
             <span class="badge">EN LÍNEA</span>
-            <span style="margin-left:12px;color:#38bdf8;font-weight:bold;">Destino: +${emergencyRecipient}</span>
+            <span style="margin-left:12px;color:#38bdf8;font-weight:bold;">Destino: +${escapeHtml(emergencyRecipient)}</span>
         </div>
     </div>
     <div class="container">

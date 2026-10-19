@@ -15,11 +15,34 @@
 --
 -- NOTA: Las migraciones del directorio supabase/migrations no se "aplican" aquí,
 --       pero este SQL está listo para ser ejecutado en el SQL Editor de Supabase.
+--
+-- ⚠️ IMPORTANTE ANTES DE EJECUTAR ESTE SCRIPT ⚠️
+--    El panel web (alerta_ciudadana_web) TODAVÍA LEE directamente con el rol
+--    anon las tablas `persona` y `operador_central` (lista de ciudadanos,
+--    técnicos/administradores, y el join de `reporte` con `persona`).
+--    Al cerrar esas tablas (secciones 6 y 9), esas pantallas devolverán
+--    vacío/errores.
+--
+--    Las ESCRITURAS de personal ya NO se hacen desde el navegador: el panel
+--    usa la Edge Function `security` (acción `staff-save`/`staff-delete`, con
+--    service_role y contraseñas hasheadas con bcrypt). Solo faltan las
+--    LECTURAS: para aplicar el cierre sin romper el panel hay que migrarlas a
+--    una acción de la Edge Function (con service_role), igual que el login
+--    (`login-staff`) y el alta/edición de personal (`staff-save`).
+--
+--    El cierre de `codigo_otp`, `sesion_usuario` y `cuenta_soporte` SÍ es seguro
+--    hoy: solo se acceden vía Edge Functions.
+--
+--    Si por ahora no desea migrar esas lecturas, NO ejecute las secciones 6 y 9.
+-- ==============================================================================
 -- ==============================================================================
 
 -- 1. Asegurar RLS activo
 ALTER TABLE persona ENABLE ROW LEVEL SECURITY;
 ALTER TABLE codigo_otp ENABLE ROW LEVEL SECURITY;
+
+-- 1b. Anti fuerza bruta del OTP: contador de intentos fallidos (6 dígitos = 1M).
+ALTER TABLE codigo_otp ADD COLUMN IF NOT EXISTS intentos INT NOT NULL DEFAULT 0;
 ALTER TABLE sesion_usuario ENABLE ROW LEVEL SECURITY;
 ALTER TABLE operador_central ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reporte ENABLE ROW LEVEL SECURITY;

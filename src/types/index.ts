@@ -39,7 +39,7 @@ export interface TrackingSession {
 
 export interface WhatsAppDispatchResult {
   delivered: boolean;
-  provider: 'green_api' | 'meta_cloud_api' | 'mock_gateway';
+  provider: 'green_api' | 'none';
   timestamp: string;
   recipient: string;
   idMessage?: string;

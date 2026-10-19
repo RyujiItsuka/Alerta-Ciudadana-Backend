@@ -1,13 +1,13 @@
+// `dotenv/config` debe importarse PRIMERO para que las variables de entorno
+// estén disponibles antes de inicializar los servicios (que leen process.env).
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import { Alert, Coordinates, CitizenData } from './types/index.js';
 import { WhatsAppService } from './services/whatsapp.service.js';
 import { TrackingService } from './services/tracking.service.js';
 import { renderTrackingHtml } from './views/tracking.view.js';
 import { renderDashboardHtml } from './views/dashboard.view.js';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8000;
@@ -18,16 +18,30 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://emtzprcntefzkvvzmhfk.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtdHpwcmNudGVmemt2dnptaGZrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3ODIxNzIsImV4cCI6MjEwNjM1ODE3Mn0.x18Bh68n4ZgtNOyVPwIc01V6aL50oUaXjeXELzlWEh4';
+// Configuración de Supabase SOLO desde variables de entorno (sin secretos en el código).
+const SUPABASE_URL = process.env.SUPABASE_URL ?? '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? '';
+const SUPABASE_CONFIGURED = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+if (!SUPABASE_CONFIGURED) {
+  console.warn('[Config] SUPABASE_URL / SUPABASE_ANON_KEY no configurados: la carga de reportes persistentes queda deshabilitada.');
+}
 
-// Almacén en memoria de alertas recibidas en la sesión activa
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`;
+
+// Almacén en memoria de alertas recibidas en la sesión activa (acotado para no crecer sin límite).
 const alertStore: Alert[] = [];
+const ALERT_STORE_MAX = 200;
+
+/** Combina las alertas de la sesión con las de la base de datos sin duplicar IDs. */
+function mergeAlerts(dbAlerts: Alert[]): Alert[] {
+  return [...alertStore, ...dbAlerts.filter((d) => !alertStore.some((a) => a.id === d.id))];
+}
 
 /**
  * Consulta la base de datos Supabase (PostgreSQL) para cargar los reportes persistentes
  */
 async function fetchSupabaseAlerts(): Promise<Alert[]> {
+  if (!SUPABASE_CONFIGURED) return [];
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/reporte?select=id_reporte,descripcion,fecha_hora,tipo_incidencia(nombre),ubicacion(latitud,longitud,direccion_texto),ciudadano(nombres,apellidos,telefono)&order=fecha_hora.desc&limit=50`,
@@ -102,7 +116,7 @@ app.get('/api/health', async (req: Request, res: Response) => {
  */
 app.get('/api/alerts', async (req: Request, res: Response) => {
   const dbAlerts = await fetchSupabaseAlerts();
-  const allAlerts = [...alertStore, ...dbAlerts.filter(d => !alertStore.some(a => a.id === d.id))];
+  const allAlerts = mergeAlerts(dbAlerts);
   res.json({
     count: allAlerts.length,
     alerts: allAlerts,
@@ -152,7 +166,7 @@ app.post('/api/alerts', async (req: Request, res: Response) => {
     const alertId = `ALT-${Date.now()}`;
     const isRobo = category.trim().toUpperCase() === 'ROBO';
     const isSecuestro = category.trim().toUpperCase() === 'SECUESTRO';
-    const trackingUrl = `http://localhost:${PORT}/tracking/${alertId}`;
+    const trackingUrl = `${PUBLIC_BASE_URL}/tracking/${alertId}`;
     const gmapsNavUrl = `https://www.google.com/maps/dir/?api=1&destination=${coordinates.lat},${coordinates.lon}`;
 
     // Si es caso de ROBO o SECUESTRO, inicializar sesión de rastreo continuo
@@ -211,6 +225,7 @@ app.post('/api/alerts', async (req: Request, res: Response) => {
       citizen,
     };
     alertStore.push(newAlert);
+    if (alertStore.length > ALERT_STORE_MAX) alertStore.shift();
 
     // Despacho a WhatsApp mediante Green-API
     const dispatchResult = await WhatsAppService.sendMessage(newAlert.recipientNumber, finalMessage);
@@ -220,7 +235,7 @@ app.post('/api/alerts', async (req: Request, res: Response) => {
       alertId,
       status: 'dispatched',
       category,
-      trackingUrl: isRobo ? trackingUrl : undefined,
+      trackingUrl: (isRobo || isSecuestro) ? trackingUrl : undefined,
       gmapsNavUrl,
       whatsapp: dispatchResult,
       timestamp: new Date().toISOString(),
@@ -257,9 +272,13 @@ app.post('/api/tracking/:alertId', (req: Request, res: Response) => {
  * Detener rastreo GPS de una alerta
  */
 app.post('/api/tracking/:alertId/stop', (req: Request, res: Response) => {
-  const { alertId } = req.params;
-  const stopped = TrackingService.stopSession(alertId);
-  res.json({ success: stopped, status: 'stopped' });
+  try {
+    const { alertId } = req.params;
+    const stopped = TrackingService.stopSession(alertId);
+    res.json({ success: stopped, status: 'stopped' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: String(error) });
+  }
 });
 
 // ==========================================
@@ -272,7 +291,7 @@ app.post('/api/tracking/:alertId/stop', (req: Request, res: Response) => {
 app.get('/tracking/:alertId', (req: Request, res: Response) => {
   const { alertId } = req.params;
   const session = TrackingService.getSession(alertId);
-  const html = renderTrackingHtml(alertId, session);
+  const html = renderTrackingHtml(alertId, session, EMERGENCY_RECIPIENT);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
 });
@@ -282,7 +301,7 @@ app.get('/tracking/:alertId', (req: Request, res: Response) => {
  */
 app.get(['/', '/dashboard'], async (req: Request, res: Response) => {
   const dbAlerts = await fetchSupabaseAlerts();
-  const allAlerts = [...alertStore, ...dbAlerts.filter(d => !alertStore.some(a => a.id === d.id))];
+  const allAlerts = mergeAlerts(dbAlerts);
   const html = renderDashboardHtml(allAlerts, EMERGENCY_RECIPIENT);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);

@@ -9,24 +9,52 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const GREEN_API_ID_INSTANCE = Deno.env.get('GREEN_API_ID_INSTANCE') || '710522731795';
-const GREEN_API_TOKEN = Deno.env.get('GREEN_API_TOKEN') || '1d98a458d1a64672abcff255236d807432183678856b42cfba';
+const GREEN_API_ID_INSTANCE = Deno.env.get('GREEN_API_ID_INSTANCE') || '';
+const GREEN_API_TOKEN = Deno.env.get('GREEN_API_TOKEN') || '';
 const GREEN_API_URL = Deno.env.get('GREEN_API_URL') || 'https://7105.api.greenapi.com';
-const JWT_SECRET = Deno.env.get('JWT_SECRET_KEY') || 'alerta_ciudadana_pisco_jwt_secure_key_2026_sprint4';
+const JWT_SECRET = Deno.env.get('JWT_SECRET_KEY') || '';
+const EMERGENCY_RECIPIENT = Deno.env.get('EMERGENCY_RECIPIENT') || '51976264949';
 
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || 'https://emtzprcntefzkvvzmhfk.supabase.co';
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
 const SUPABASE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('SUPABASE_ANON_KEY') || '';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-function extractDniFromToken(authHeader: string | null): string | null {
-  if (!authHeader) return null;
+function base64UrlToBytes(input: string): Uint8Array {
+  let base64 = input.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) base64 += '=';
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * HU-SEG-04: Verifica la FIRMA HMAC-SHA256 del JWT de sesión y devuelve el DNI
+ * solo si el token es auténtico y no ha expirado. Un token alterado/forjado
+ * devuelve null (no se confía en el DNI del body).
+ */
+async function verifiedDniFromToken(authHeader: string | null): Promise<string | null> {
+  if (!authHeader || !JWT_SECRET) return null;
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   try {
-    let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    while (base64.length % 4) base64 += '=';
-    const payload = JSON.parse(atob(base64));
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(JWT_SECRET),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    const valid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      base64UrlToBytes(parts[2]),
+      new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
+    );
+    if (!valid) return null;
+    const payload = JSON.parse(new TextDecoder().decode(base64UrlToBytes(parts[1])));
+    if (payload.exp && Date.now() / 1000 > payload.exp) return null;
     return payload.dni || null;
   } catch {
     return null;
@@ -47,12 +75,14 @@ serve(async (req) => {
       recipientNumber = EMERGENCY_RECIPIENT,
       source = 'ui_button',
       coordinates = { lat: -12.04637, lon: -77.02987 },
+      address = '',
       citizen,
     } = payload;
 
-    // HU-SEG-04: Extraer DNI verificado del token de sesión (no confiar en el body)
+    // HU-SEG-04: DNI verificado a partir de la firma del token de sesión
+    // (nunca se confía ciegamente en el body).
     const authHeader = req.headers.get('Authorization');
-    const tokenDni = extractDniFromToken(authHeader);
+    const tokenDni = await verifiedDniFromToken(authHeader);
     const verifiedCitizenDni = tokenDni || (citizen ? citizen.dni : null);
 
     const alertId = `ALT-${Date.now()}`;
@@ -99,7 +129,7 @@ serve(async (req) => {
 
     // Despacho a Green-API (solo si no fue despachado previamente como archivo multimedia)
     let waData = null;
-    if (!payload.skipWhatsApp) {
+    if (!payload.skipWhatsApp && cleanRecipient && GREEN_API_TOKEN && GREEN_API_ID_INSTANCE) {
       const waUrl = `${GREEN_API_URL}/waInstance${GREEN_API_ID_INSTANCE}/sendMessage/${GREEN_API_TOKEN}`;
       const waRes = await fetch(waUrl, {
         method: 'POST',

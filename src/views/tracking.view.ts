@@ -1,6 +1,16 @@
 import { TrackingSession } from '../types/index.js';
 
-export function renderTrackingHtml(alertId: string, session?: TrackingSession): string {
+/** Escapa texto para insertarlo de forma segura en HTML (evita XSS almacenado). */
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export function renderTrackingHtml(alertId: string, session?: TrackingSession, emergencyRecipient = ''): string {
   const lastPoint = session && session.points.length > 0
     ? session.points[session.points.length - 1]
     : { lat: -12.04637, lon: -77.02987, timestamp: 'Reciente', speed: '0 km/h' };
@@ -8,12 +18,16 @@ export function renderTrackingHtml(alertId: string, session?: TrackingSession): 
   const initLat = lastPoint.lat;
   const initLon = lastPoint.lon;
   const pointsCount = session ? session.points.length : 1;
+  const category = (session?.category || 'ROBO').toUpperCase();
+  const safeAlertId = escapeHtml(alertId);
+  const alertIdJson = JSON.stringify(alertId);
+  const safeRecipient = escapeHtml(emergencyRecipient);
 
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Rastreo Táctico en Vivo - Caso ROBO (${alertId})</title>
+    <title>Rastreo Táctico en Vivo - Caso ${escapeHtml(category)} (${safeAlertId})</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -37,16 +51,16 @@ export function renderTrackingHtml(alertId: string, session?: TrackingSession): 
     <div id="header">
         <div>
             <div style="display:flex; align-items:center; gap: 10px;">
-                <h3 style="margin:0; color:#F87171;">🚨 SEGUIMIENTO GPS EN TIEMPO REAL: ROBO</h3>
+                <h3 style="margin:0; color:#F87171;">🚨 SEGUIMIENTO GPS EN TIEMPO REAL: ${escapeHtml(category)}</h3>
                 <span class="badge-live">EN VIVO</span>
             </div>
-            <small style="color:#9CA3AF;">ID de Incidente: <b>${alertId}</b> | Transmisión continua a Central de Monitoreo</small>
+            <small style="color:#9CA3AF;">ID de Incidente: <b>${safeAlertId}</b> | Transmisión continua a Central de Monitoreo</small>
         </div>
         <div style="display:flex; align-items:center;">
             <a id="btn-gmaps-header" href="https://www.google.com/maps/dir/?api=1&destination=${initLat},${initLon}" target="_blank" style="background:#2563EB; color:white; padding:8px 14px; border-radius:6px; font-weight:700; text-decoration:none; display:inline-flex; align-items:center; gap:6px; font-size:12px; margin-right:16px;">
                 🚗 CÓMO LLEGAR (Google Maps)
             </a>
-            <span style="font-size:13px; color:#A7F3D0; font-weight:bold;">Central: +51 976264949</span>
+            <span style="font-size:13px; color:#A7F3D0; font-weight:bold;">Central: +${safeRecipient}</span>
         </div>
     </div>
 
@@ -66,7 +80,7 @@ export function renderTrackingHtml(alertId: string, session?: TrackingSession): 
     <div id="map"></div>
 
     <script>
-        const alertId = "${alertId}";
+        const alertId = ${alertIdJson};
         const map = L.map('map').setView([${initLat}, ${initLon}], 16);
 
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -82,7 +96,7 @@ export function renderTrackingHtml(alertId: string, session?: TrackingSession): 
         });
 
         let currentMarker = L.marker([${initLat}, ${initLon}], { icon: redPulsingIcon }).addTo(map)
-            .bindPopup("<b>🚨 Posición Actual de la Víctima (ROBO)</b>").openPopup();
+            .bindPopup("<b>🚨 Posición Actual de la Víctima (${escapeHtml(category)})</b>").openPopup();
 
         let routePolyline = L.polyline([[${initLat}, ${initLon}]], {
             color: '#EF4444',

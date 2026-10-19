@@ -21,27 +21,36 @@ CREATE TABLE IF NOT EXISTS cuenta_soporte (
     ultimo_acceso TIMESTAMPTZ
 );
 
--- Insertar Superadmin Maestro (Desarrollador) con contraseña encriptada con bcrypt
-INSERT INTO cuenta_soporte (usuario, nombres, apellidos, email, password_hash, rol)
-VALUES (
-    'soporte',
-    'Soporte Técnico',
-    'Alerta Ciudadana Dev',
-    'soporte@alertaciudadana.pe',
-    crypt('Soporte@2026Dev!', gen_salt('bf', 10)),
-    'superadmin'
-)
-ON CONFLICT (usuario) DO UPDATE
-SET password_hash = crypt('Soporte@2026Dev!', gen_salt('bf', 10)),
-    rol = 'superadmin';
+-- Insertar Superadmin Maestro (Desarrollador).
+-- ⚠️ SEGURIDAD: sin contraseñas hardcodeadas. Reemplace el marcador por una
+--    contraseña fuerte propia antes de ejecutar; el bloque aborta si no se
+--    reemplazó (así el repositorio nunca contiene credenciales funcionales).
+DO $$
+DECLARE
+    v_password text := 'CAMBIAR_ESTA_CLAVE_ANTES_DE_EJECUTAR';
+BEGIN
+    IF v_password = 'CAMBIAR_ESTA_CLAVE_ANTES_DE_EJECUTAR' THEN
+        RAISE EXCEPTION 'Edite cuenta_soporte_y_encriptacion.sql y reemplace la contraseña de soporte antes de ejecutarlo.';
+    END IF;
+
+    INSERT INTO cuenta_soporte (usuario, nombres, apellidos, email, password_hash, rol)
+    VALUES (
+        'soporte',
+        'Soporte Técnico',
+        'Alerta Ciudadana Dev',
+        'soporte@alertaciudadana.pe',
+        crypt(v_password, gen_salt('bf', 10)),
+        'superadmin'
+    )
+    ON CONFLICT (usuario) DO UPDATE
+    SET password_hash = EXCLUDED.password_hash,
+        rol = 'superadmin';
+END $$;
 
 -- 2. ENCRIPTACIÓN DE CONTRASEÑAS EN operador_central (ADMINISTRADORES Y TÉCNICOS)
--- Asegurar que la contraseña del administrador general esté cifrada con bcrypt
-UPDATE operador_central
-SET password_hash = crypt('Pisco@Segura2026!', gen_salt('bf', 10))
-WHERE usuario = 'admin' AND password_hash NOT LIKE '$2a$%';
-
--- Cifrar cualquier contraseña previa existente que aún esté en texto plano
+-- Cifrar cualquier contraseña previa existente que aún esté en texto plano,
+-- conservando la misma clave (se re-hashea el valor existente con bcrypt).
+-- NO se fuerza ninguna contraseña conocida.
 UPDATE operador_central
 SET password_hash = crypt(password_hash, gen_salt('bf', 10))
 WHERE password_hash NOT LIKE '$2a$%';
@@ -62,9 +71,8 @@ BEGIN
     WHERE LOWER(usuario) = LOWER(TRIM(p_usuario));
 
     IF FOUND THEN
-        IF v_soporte.password_hash = crypt(p_password, v_soporte.password_hash) 
-           OR v_soporte.password_hash = p_password 
-           OR p_password = 'Soporte@2026Dev!' THEN
+        IF v_soporte.password_hash LIKE '$2%'
+           AND v_soporte.password_hash = crypt(p_password, v_soporte.password_hash) THEN
             
             UPDATE cuenta_soporte 
             SET ultimo_acceso = NOW() 
@@ -93,18 +101,10 @@ BEGIN
             RETURN jsonb_build_object('success', false, 'error', 'Tu cuenta se encuentra suspendida o inactiva');
         END IF;
 
-        IF v_operador.password_hash = crypt(p_password, v_operador.password_hash) 
-           OR v_operador.password_hash = p_password 
-           OR p_password = 'Pisco@Segura2026!' THEN
-            
-            -- Migración en caliente: si la contraseña estaba en texto plano, encriptarla con bcrypt
-            IF v_operador.password_hash NOT LIKE '$2a$%' THEN
-                UPDATE operador_central 
-                SET password_hash = crypt(p_password, gen_salt('bf', 10)), ultimo_acceso = NOW() 
-                WHERE id_operador = v_operador.id_operador;
-            ELSE
-                UPDATE operador_central SET ultimo_acceso = NOW() WHERE id_operador = v_operador.id_operador;
-            END IF;
+        IF v_operador.password_hash LIKE '$2%'
+           AND v_operador.password_hash = crypt(p_password, v_operador.password_hash) THEN
+
+            UPDATE operador_central SET ultimo_acceso = NOW() WHERE id_operador = v_operador.id_operador;
 
             RETURN jsonb_build_object(
                 'success', true,
