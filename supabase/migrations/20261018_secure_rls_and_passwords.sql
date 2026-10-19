@@ -91,8 +91,9 @@ CREATE POLICY "ubicacion_select_anon" ON ubicacion FOR SELECT TO anon USING (tru
 CREATE POLICY "ubicacion_update_anon" ON ubicacion FOR UPDATE TO anon USING (false) WITH CHECK (false);
 CREATE POLICY "ubicacion_delete_anon" ON ubicacion FOR DELETE TO anon USING (false);
 
--- 6. PERSONA: CERRADA al rol anon. Todo pasa por Edge Function `security`
-CREATE POLICY "persona_block_all_anon" ON persona FOR ALL TO anon USING (false) WITH CHECK (false);
+-- 6. PERSONA: CERRADA. No se crea ninguna política, de modo que con RLS activo
+--    ni anon ni authenticated pueden leerla. Todo pasa por la Edge Function
+--    `security` con service_role (que bypasea RLS).
 
 -- 7. CODIGO_OTP: CERRADO al rol anon. Solo la Edge Function puede gestionar OTP
 CREATE POLICY "otp_block_all_anon" ON codigo_otp FOR ALL TO anon USING (false) WITH CHECK (false);
@@ -100,9 +101,8 @@ CREATE POLICY "otp_block_all_anon" ON codigo_otp FOR ALL TO anon USING (false) W
 -- 8. SESION_USUARIO: CERRADO al rol anon. Solo la Edge Function emite/revoca
 CREATE POLICY "sesion_block_all_anon" ON sesion_usuario FOR ALL TO anon USING (false) WITH CHECK (false);
 
--- 9. OPERADOR_CENTRAL: cerrar acceso directo al rol anon. Mantén acceso desde
---    app central solo si esa app usa service_role o un usuario autenticado.
-CREATE POLICY "operador_central_block_all_anon" ON operador_central FOR ALL TO anon USING (false) WITH CHECK (false);
+-- 9. OPERADOR_CENTRAL: cerrada. Sin políticas, el navegador no puede leer
+--    usuarios ni hashes de contraseña; el panel la consulta vía `security`.
 
 -- 10. CUENTA_SOPORTE: totalmente aislado al rol anon
 CREATE POLICY "cuenta_soporte_block_all_anon" ON cuenta_soporte FOR ALL TO anon USING (false) WITH CHECK (false);

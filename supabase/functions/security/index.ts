@@ -16,7 +16,8 @@
 // Acciones (?action=...):
 //   send-otp, verify-otp, register, login, logout, revoke-session,
 //   verify-token, reset-password, update-pin, find-user, login-staff,
-//   staff-save, staff-delete, get-config, set-config
+//   staff-save, staff-delete, get-config, set-config,
+//   list-operadores, list-personas, list-reportes, db-health
 // ==============================================================================
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
@@ -136,6 +137,10 @@ const SAFE_STAFF_FIELDS =
 // (frena la fuerza bruta sobre un código de solo 6 dígitos).
 const MAX_OTP_ATTEMPTS = 5;
 
+// Campos seguros para las listas del panel (incluye created_at para la UI).
+const SAFE_PERSONA_LIST_FIELDS =
+  "id_persona,dni,nombres,apellidos,telefono,rol,created_at";
+
 // Verifica una contraseña contra el hash almacenado en una tabla de personal
 // (cuenta_soporte / operador_central / persona). Si el valor almacenado es un
 // hash bcrypt se compara; si es una credencial legada en texto plano se compara
@@ -198,6 +203,22 @@ async function requireStaffAdmin(
   if (!claims || claims.scope !== "staff") return null;
   const rol = String(claims.rol ?? "").toLowerCase();
   if (rol !== "administrador" && rol !== "superadmin") return null;
+  return { usuario: String(claims.usuario ?? ""), rol };
+}
+
+// Autoriza una ACCIÓN DE CONSULTA del panel: exige un token de staff válido de
+// cualquier rol (técnico, administrador o superadmin). El rol de técnico sólo
+// sirve para leer listas; crear o modificar cuentas sigue exigiendo
+// requireStaffAdmin.
+async function requireStaff(
+  token: unknown,
+): Promise<{ usuario: string; rol: string } | null> {
+  const claims = token ? await verifyJWT(String(token)) : null;
+  if (!claims || claims.scope !== "staff") return null;
+  const rol = String(claims.rol ?? "").toLowerCase();
+  if (rol !== "tecnico" && rol !== "administrador" && rol !== "superadmin") {
+    return null;
+  }
   return { usuario: String(claims.usuario ?? ""), rol };
 }
 
@@ -942,6 +963,111 @@ serve(async (req) => {
         );
       if (error) return json({ success: false, error: error.message }, 500);
       return json({ success: true, clave, valor });
+    }
+
+    // =========================================================================
+    // 11. CONSULTAS DEL PANEL (reemplazan las lecturas directas con la clave
+    //     anon). El RLS de persona / operador_central está CERRADO: sólo
+    //     service_role puede leer esas tablas, así que el panel pasa por aquí
+    //     presentando su token de staff.
+    // =========================================================================
+    if (action === "list-operadores") {
+      const caller = await requireStaff(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión del personal." },
+          401,
+        );
+      }
+      const rolesWanted = Array.isArray(body?.roles) ? body.roles : [];
+      const roles = rolesWanted
+        .map((r: unknown) => String(r).toLowerCase().trim())
+        .filter((r: string) =>
+          ["tecnico", "admin", "administrador", "superadmin"].includes(r)
+        );
+
+      let query = supabase
+        .from("operador_central")
+        .select(SAFE_STAFF_FIELDS)
+        .order("id_operador", { ascending: false });
+      if (roles.length > 0) query = query.in("rol", roles);
+
+      const { data, error } = await query;
+      if (error) return json({ success: false, error: error.message }, 500);
+      return json({ success: true, operadores: data ?? [] });
+    }
+
+    if (action === "list-personas") {
+      const caller = await requireStaff(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión del personal." },
+          401,
+        );
+      }
+      const limit = Math.min(Math.max(Number(body?.limit ?? 100) || 100, 1), 500);
+      const { data, error } = await supabase
+        .from("persona")
+        .select(SAFE_PERSONA_LIST_FIELDS)
+        .order("id_persona", { ascending: false })
+        .limit(limit);
+      if (error) return json({ success: false, error: error.message }, 500);
+      return json({ success: true, personas: data ?? [] });
+    }
+
+    if (action === "list-reportes") {
+      const caller = await requireStaff(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión del personal." },
+          401,
+        );
+      }
+      const idReporte = body?.id_reporte !== undefined && body?.id_reporte !== null &&
+          body?.id_reporte !== ""
+        ? Number(body.id_reporte)
+        : null;
+
+      let query = supabase
+        .from("reporte")
+        .select(
+          `id_reporte,descripcion,fecha_hora,id_estado,direccion_texto,
+           tipo_incidencia (nombre),
+           ubicacion (latitud, longitud),
+           persona (nombres, apellidos, telefono, dni)`,
+        )
+        .order("fecha_hora", { ascending: false });
+
+      if (idReporte !== null && !Number.isNaN(idReporte)) {
+        query = query.eq("id_reporte", idReporte).limit(1);
+      } else {
+        query = query.limit(Math.min(Math.max(Number(body?.limit ?? 50) || 50, 1), 200));
+      }
+
+      const { data, error } = await query;
+      if (error) return json({ success: false, error: error.message }, 500);
+      return json({ success: true, reportes: data ?? [] });
+    }
+
+    if (action === "db-health") {
+      const caller = await requireStaff(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión del personal." },
+          401,
+        );
+      }
+      const started = Date.now();
+      const { error } = await supabase
+        .from("operador_central")
+        .select("id_operador")
+        .limit(1);
+      const latencyMs = Date.now() - started;
+      return json({
+        success: !error,
+        latencyMs,
+        error: error ? error.message : null,
+      });
     }
 
     return json({ success: false, error: "Acción no válida" }, 400);

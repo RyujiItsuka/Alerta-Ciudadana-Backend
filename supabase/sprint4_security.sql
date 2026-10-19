@@ -156,10 +156,17 @@ CREATE POLICY "reporte_select_policy" ON reporte FOR SELECT USING (true);
 CREATE POLICY "ubicacion_insert_policy" ON ubicacion FOR INSERT WITH CHECK (true);
 CREATE POLICY "ubicacion_select_policy" ON ubicacion FOR SELECT USING (true);
 
--- Políticas para PERSONA, OTP y SESION (Gestionadas mediante Backend / Edge Function segura con service_role)
-CREATE POLICY "persona_anon_access" ON persona FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "otp_anon_access" ON codigo_otp FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "sesion_anon_access" ON sesion_usuario FOR ALL USING (true) WITH CHECK (true);
+-- PERSONA, OTP y SESION: gestionadas ÚNICAMENTE por la Edge Function `security`
+-- con service_role. NO se crea ninguna política permisiva: con RLS activo y sin
+-- políticas, el navegador (rol anon) queda sin acceso a datos personales, códigos
+-- OTP y sesiones. Antes existía un "anon_access" FOR ALL USING (true) que exponía
+-- esas tablas a cualquiera; retirado el 2026-10-19 junto con el cierre de RLS.
+DROP POLICY IF EXISTS "persona_anon_access" ON persona;
+DROP POLICY IF EXISTS "otp_anon_access" ON codigo_otp;
+DROP POLICY IF EXISTS "sesion_anon_access" ON sesion_usuario;
+DROP POLICY IF EXISTS "persona_block_all_anon" ON persona;
+DROP POLICY IF EXISTS "otp_block_all_anon" ON codigo_otp;
+DROP POLICY IF EXISTS "sesion_block_all_anon" ON sesion_usuario;
 
 -- ==============================================================================
 -- DATOS INICIALES (SEEDS)

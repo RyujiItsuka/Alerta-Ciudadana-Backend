@@ -180,22 +180,20 @@ DROP POLICY IF EXISTS "Denegar acceso directo a cuenta_soporte" ON cuenta_soport
 CREATE POLICY "Denegar acceso directo a cuenta_soporte" ON cuenta_soporte
     FOR ALL TO anon USING (false);
 
--- operador_central: permitir operaciones de la aplicación web
+-- operador_central: CERRADA al navegador (rol anon). La app web gestiona estas
+-- cuentas a través de la Edge Function `security` (staff-save / staff-delete /
+-- list-operadores), que opera con la service_role dentro del servidor.
+-- Se eliminan las políticas permisivas heredadas y NO se crea ninguna nueva:
+-- con RLS activo y sin políticas, únicamente service_role puede leer o escribir.
 DROP POLICY IF EXISTS "Permitir lectura operador_central" ON operador_central;
-CREATE POLICY "Permitir lectura operador_central" ON operador_central
-    FOR SELECT TO anon USING (true);
-
 DROP POLICY IF EXISTS "Permitir insercion operador_central" ON operador_central;
-CREATE POLICY "Permitir insercion operador_central" ON operador_central
-    FOR INSERT TO anon WITH CHECK (true);
-
 DROP POLICY IF EXISTS "Permitir modificacion operador_central" ON operador_central;
-CREATE POLICY "Permitir modificacion operador_central" ON operador_central
-    FOR UPDATE TO anon USING (true);
-
 DROP POLICY IF EXISTS "Permitir eliminacion operador_central" ON operador_central;
-CREATE POLICY "Permitir eliminacion operador_central" ON operador_central
-    FOR DELETE TO anon USING (true);
+DROP POLICY IF EXISTS "Permitir lectura en operador_central" ON operador_central;
+DROP POLICY IF EXISTS "Permitir insercion en operador_central" ON operador_central;
+DROP POLICY IF EXISTS "Permitir actualizacion en operador_central" ON operador_central;
+DROP POLICY IF EXISTS "Permitir eliminacion en operador_central" ON operador_central;
+DROP POLICY IF EXISTS "operador_central_block_all_anon" ON operador_central;
 
 -- 6. POLÍTICA DE ACTUALIZACIÓN DE ESTADOS EN TABLA REPORTE
 INSERT INTO estado_reporte (id_estado, nombre, descripcion) VALUES 
