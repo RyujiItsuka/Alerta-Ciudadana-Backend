@@ -222,6 +222,20 @@ async function requireStaff(
   return { usuario: String(claims.usuario ?? ""), rol };
 }
 
+// Comprueba si un token de ciudadano corresponde a una sesión REVOCADA.
+// La revocación (por reporte de robo o por exposición de tokens) se aplica
+// consultando el estado real en `sesion_usuario`, porque la firma del JWT por
+// sí sola seguiría siendo válida hasta su expiración. Devuelve true cuando la
+// sesión existe y está marcada como revocada.
+async function isCitizenSessionRevoked(token: string): Promise<boolean> {
+  const { data } = await supabase
+    .from("sesion_usuario")
+    .select("revocado")
+    .eq("token_jwt", token)
+    .maybeSingle();
+  return Boolean(data?.revocado);
+}
+
 // Envía el OTP por la Edge Function "whatsapp" (token de Green API en el servidor).
 async function sendOtpByWhatsApp(phone: string, code: string): Promise<void> {
   const message =
@@ -738,6 +752,13 @@ serve(async (req) => {
       if (!claims || String(claims.dni) !== String(dni)) {
         return json({ success: false, error: "No autorizado: inicie sesión nuevamente." }, 401);
       }
+      // Rechazar tokens de sesiones revocadas (robo o exposición de tokens).
+      if (await isCitizenSessionRevoked(String(token))) {
+        return json(
+          { success: false, error: "Su sesión fue cerrada por seguridad. Inicie sesión nuevamente." },
+          403,
+        );
+      }
 
       const pinHash = await hashBcrypt(String(pin));
       const { error } = await supabase
@@ -878,8 +899,13 @@ serve(async (req) => {
     // 9. HU-SEG-02: VALIDACIÓN DE TOKEN (middleware)
     // =========================================================================
     if (action === "verify-token") {
+      // El token del ciudadano viaja en el body (igual que en el resto de
+      // acciones). Se acepta también en el header Authorization como respaldo,
+      // ignorando el caso en que el header sólo trae la anon key del cliente.
       const authHeader = req.headers.get("Authorization") || "";
-      const token = authHeader.replace(/^Bearer\s+/i, "");
+      const headerToken = authHeader.replace(/^Bearer\s+/i, "");
+      const bodyToken = typeof body?.token === "string" ? body.token.trim() : "";
+      const token = bodyToken || headerToken;
       const payload = await verifyJWT(token);
       if (!payload) {
         return json({ valid: false, error: "Token inválido o expirado" }, 401);
@@ -890,7 +916,7 @@ serve(async (req) => {
         .eq("token_jwt", token)
         .maybeSingle();
       if (session && session.revocado) {
-        return json({ valid: false, error: "Sesión revocada por reporte de robo" }, 403);
+        return json({ valid: false, error: "Sesión revocada. Inicie sesión nuevamente." }, 403);
       }
       return json({ valid: true, payload });
     }
