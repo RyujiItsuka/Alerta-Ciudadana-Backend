@@ -1049,6 +1049,31 @@ serve(async (req) => {
       return json({ success: true, reportes: data ?? [] });
     }
 
+    if (action === "update-reporte-estado") {
+      const caller = await requireStaff(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión del personal." },
+          401,
+        );
+      }
+      const idReporte = Number(body?.id_reporte);
+      const idEstado = Number(body?.id_estado);
+      if (!Number.isInteger(idReporte) || idReporte <= 0) {
+        return json({ success: false, error: "id_reporte inválido." }, 400);
+      }
+      // Estados válidos del flujo de despacho (ver tabla estado_reporte).
+      if (!Number.isInteger(idEstado) || ![1, 2, 3, 4].includes(idEstado)) {
+        return json({ success: false, error: "id_estado inválido." }, 400);
+      }
+      const { error } = await supabase
+        .from("reporte")
+        .update({ id_estado: idEstado })
+        .eq("id_reporte", idReporte);
+      if (error) return json({ success: false, error: error.message }, 500);
+      return json({ success: true, id_reporte: idReporte, id_estado: idEstado });
+    }
+
     if (action === "db-health") {
       const caller = await requireStaff(body?.token);
       if (!caller) {
