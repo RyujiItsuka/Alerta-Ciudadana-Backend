@@ -1,0 +1,45 @@
+name: CI
+
+# Control de cambios (Semana 11) - verificacion automatica del backend.
+# Se ejecuta en cada pull request hacia main/develop y en cada push a esas
+# ramas. Objetivo: que ningun cambio llegue a la rama de integracion ni a main
+# sin compilar. Con la proteccion de rama activa, un job en rojo bloquea el
+# merge del pull request.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Cancela ejecuciones anteriores del mismo PR cuando se sube un cambio nuevo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compilar TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Instalar dependencias (reproducible)
+        run: npm ci
+
+      - name: Compilar (type-check + build)
+        run: npm run build
+
+      - name: Verificar el artefacto compilado
+        run: test -f dist/server.js
