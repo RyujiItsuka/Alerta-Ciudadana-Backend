@@ -1,16 +1,16 @@
 name: CI
 
 # Control de cambios (Semana 11) - verificacion automatica del backend.
-# Se ejecuta en cada pull request hacia main/develop y en cada push a esas
+# Se ejecuta en cada pull request hacia main/desarrollo y en cada push a esas
 # ramas. Objetivo: que ningun cambio llegue a la rama de integracion ni a main
 # sin compilar. Con la proteccion de rama activa, un job en rojo bloquea el
 # merge del pull request.
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, desarrollo]
   pull_request:
-    branches: [main, develop]
+    branches: [main, desarrollo]
   workflow_dispatch:
 
 # Cancela ejecuciones anteriores del mismo PR cuando se sube un cambio nuevo.
