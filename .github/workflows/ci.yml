@@ -43,3 +43,18 @@ jobs:
 
       - name: Verificar el artefacto compilado
         run: test -f dist/server.js
+
+  edge-functions:
+    name: Validar Edge Functions (Deno)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.6
+
+      - name: Comprobar tipos de las funciones
+        run: deno check supabase/functions/*/index.ts

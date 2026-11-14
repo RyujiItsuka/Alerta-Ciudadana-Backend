@@ -22,6 +22,7 @@
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+// @ts-ignore: los tipos de esm.sh no declaran export default; en ejecución sí existe.
 import bcryptModule from "https://esm.sh/bcryptjs@2.4.3";
 const bcrypt: any = (bcryptModule as any)?.default || bcryptModule;
 
@@ -57,6 +58,12 @@ function normalizePhone(value: unknown): string {
 // Solo para errores críticos. Registra una etiqueta y el código/mensaje del
 // error, NUNCA datos del ciudadano (DNI, teléfono), códigos OTP, contraseñas
 // ni tokens.
+// Respuesta 500 sin detalles internos (el detalle queda solo en el log).
+function internalError(context: string, err: unknown): Response {
+  logError(context, err);
+  return json({ success: false, error: "Error interno del servidor. Intente nuevamente." }, 500);
+}
+
 function logError(context: string, err: unknown): void {
   const e = err as { code?: unknown; message?: unknown } | null;
   const code = e && typeof e === "object" && e.code ? ` [${String(e.code)}]` : "";
@@ -515,7 +522,8 @@ serve(async (req) => {
         .single();
 
       if (insertError) {
-        return json({ success: false, error: `Error al registrar: ${insertError.message}` }, 400);
+        logError("register: insert persona", insertError);
+        return json({ success: false, error: "No se pudo completar el registro. Verifique sus datos o intente más tarde." }, 400);
       }
 
       const exp = Math.floor(Date.now() / 1000) + 60 * 24 * 60 * 60;
@@ -980,7 +988,7 @@ serve(async (req) => {
       const { data, error } = await supabase
         .from("configuracion_sistema")
         .select("clave, valor");
-      if (error) return json({ success: false, error: error.message }, 500);
+      if (error) return internalError(`${action}: consulta`, error);
       const config: Record<string, string> = {};
       for (const row of data ?? []) {
         config[String(row.clave)] = String(row.valor ?? "");
@@ -1030,7 +1038,7 @@ serve(async (req) => {
           },
           { onConflict: "clave" },
         );
-      if (error) return json({ success: false, error: error.message }, 500);
+      if (error) return internalError(`${action}: consulta`, error);
       return json({ success: true, clave, valor });
     }
 
@@ -1062,7 +1070,7 @@ serve(async (req) => {
       if (roles.length > 0) query = query.in("rol", roles);
 
       const { data, error } = await query;
-      if (error) return json({ success: false, error: error.message }, 500);
+      if (error) return internalError(`${action}: consulta`, error);
       return json({ success: true, operadores: data ?? [] });
     }
 
@@ -1080,7 +1088,7 @@ serve(async (req) => {
         .select(SAFE_PERSONA_LIST_FIELDS)
         .order("id_persona", { ascending: false })
         .limit(limit);
-      if (error) return json({ success: false, error: error.message }, 500);
+      if (error) return internalError(`${action}: consulta`, error);
       return json({ success: true, personas: data ?? [] });
     }
 
@@ -1114,7 +1122,7 @@ serve(async (req) => {
       }
 
       const { data, error } = await query;
-      if (error) return json({ success: false, error: error.message }, 500);
+      if (error) return internalError(`${action}: consulta`, error);
       return json({ success: true, reportes: data ?? [] });
     }
 
@@ -1139,7 +1147,7 @@ serve(async (req) => {
         .from("reporte")
         .update({ id_estado: idEstado })
         .eq("id_reporte", idReporte);
-      if (error) return json({ success: false, error: error.message }, 500);
+      if (error) return internalError(`${action}: consulta`, error);
       return json({ success: true, id_reporte: idReporte, id_estado: idEstado });
     }
 
@@ -1166,7 +1174,6 @@ serve(async (req) => {
 
     return json({ success: false, error: "Acción no válida" }, 400);
   } catch (err) {
-    logError("error no controlado", err);
-    return json({ success: false, error: (err as Error).message }, 500);
+    return internalError("error no controlado", err);
   }
 });
