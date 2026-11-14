@@ -275,7 +275,9 @@ async function sendOtpByWhatsApp(phone: string, code: string): Promise<boolean> 
         chatId: `${phone}@c.us`,
         message,
       }),
-      signal: AbortSignal.timeout(10000),
+      // "whatsapp" reintenta una vez ante fallo (2 x 8 s): se espera algo más
+      // para no informar fallo de un envío que sí se completa. La app espera 25 s.
+      signal: AbortSignal.timeout(18000),
     });
     const data = await res.json().catch(() => null);
     if (!res.ok || data?.success === false) {
