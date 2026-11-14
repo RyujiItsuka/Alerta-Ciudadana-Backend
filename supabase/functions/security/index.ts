@@ -1126,6 +1126,41 @@ serve(async (req) => {
       return json({ success: true, reportes: data ?? [] });
     }
 
+    // Puntos GPS de un reporte para el panel (sustituye la lectura anónima
+    // directa de `ubicacion`). `desde_id` devuelve solo los puntos nuevos.
+    if (action === "list-ubicaciones") {
+      const caller = await requireStaff(body?.token);
+      if (!caller) {
+        return json(
+          { success: false, error: "No autorizado: se requiere sesión del personal." },
+          401,
+        );
+      }
+      const idReporte = Number(body?.id_reporte);
+      if (!Number.isInteger(idReporte) || idReporte <= 0) {
+        return json({ success: false, error: "id_reporte inválido." }, 400);
+      }
+      const desdeId = Number(body?.desde_id ?? 0);
+      const limit = Math.min(Math.max(Number(body?.limit ?? 500) || 500, 1), 2000);
+
+      let query = supabase
+        .from("ubicacion")
+        .select("id_ubicacion,id_reporte,latitud,longitud,fecha_hora")
+        .eq("id_reporte", idReporte)
+        .order("id_ubicacion", { ascending: true })
+        .limit(limit);
+      if (Number.isInteger(desdeId) && desdeId > 0) query = query.gt("id_ubicacion", desdeId);
+
+      const [{ data: puntos, error: e1 }, { data: reporte, error: e2 }] = await Promise.all([
+        query,
+        supabase.from("reporte").select("descripcion,id_estado").eq("id_reporte", idReporte)
+          .maybeSingle(),
+      ]);
+      if (e1) return internalError("list-ubicaciones: puntos", e1);
+      if (e2) return internalError("list-ubicaciones: reporte", e2);
+      return json({ success: true, reporte, ubicaciones: puntos ?? [] });
+    }
+
     if (action === "update-reporte-estado") {
       const caller = await requireStaff(body?.token);
       if (!caller) {
