@@ -45,6 +45,19 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 // URL de la Edge Function hermana "whatsapp" (envía OTP por Green API).
 const WHATSAPP_FN_URL = `${SUPABASE_URL}/functions/v1/whatsapp`;
 
+// ---- Observabilidad mínima ----
+// Solo para errores críticos. Registra una etiqueta y el código/mensaje del
+// error, NUNCA datos del ciudadano (DNI, teléfono), códigos OTP, contraseñas
+// ni tokens.
+function logError(context: string, err: unknown): void {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  const code = e && typeof e === "object" && e.code ? ` [${String(e.code)}]` : "";
+  const msg = e && typeof e === "object" && e.message
+    ? String(e.message)
+    : String(err);
+  console.error(`[security] ${context}${code}: ${msg.slice(0, 200)}`);
+}
+
 // ---- Utilidades JWT (HMAC-SHA256, 60 días) ----
 function b64urlEncode(str: string): string {
   return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -164,7 +177,7 @@ async function verifyPasswordWithMigration(
         .update({ password_hash: await hashBcrypt(plain) })
         .eq(idColumn, idValue);
     } catch (e) {
-      console.warn(`No se pudo re-hashear ${table}.${idColumn}:`, e);
+      // Log reducido
     }
     return true;
   }
@@ -237,11 +250,12 @@ async function isCitizenSessionRevoked(token: string): Promise<boolean> {
 }
 
 // Envía el OTP por la Edge Function "whatsapp" (token de Green API en el servidor).
-async function sendOtpByWhatsApp(phone: string, code: string): Promise<void> {
+// Devuelve true solo si la función respondió 2xx y no informó success: false.
+async function sendOtpByWhatsApp(phone: string, code: string): Promise<boolean> {
   const message =
     `🛡️ *AlertaCiudadana Pisco*\n\nTu código de verificación de seguridad es: *${code}*\n\n⏱️ Válido durante 5 minutos.\n⚠️ No compartas este código con nadie por tu seguridad.`;
   try {
-    await fetch(WHATSAPP_FN_URL, {
+    const res = await fetch(WHATSAPP_FN_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -255,8 +269,15 @@ async function sendOtpByWhatsApp(phone: string, code: string): Promise<void> {
       }),
       signal: AbortSignal.timeout(10000),
     });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.success === false) {
+      logError("send-otp: whatsapp rechazó el envío", { code: res.status, message: "respuesta no exitosa" });
+      return false;
+    }
+    return true;
   } catch (e) {
-    console.error("Fallo despacho OTP por WhatsApp:", e);
+    logError("send-otp: fallo despacho whatsapp", e);
+    return false;
   }
 }
 
@@ -265,7 +286,7 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
   if (!JWT_SECRET) {
-    console.error("Falta JWT_SECRET_KEY en los secretos de entorno.");
+    logError("configuración", "falta JWT_SECRET_KEY en los secretos de entorno");
     return json({ success: false, error: "Servidor no configurado (JWT)." }, 500);
   }
 
@@ -318,9 +339,23 @@ serve(async (req) => {
         expira_en: expiresAt,
         usado: false,
       });
-      if (dbError) console.error("Error guardando OTP:", dbError);
+      if (dbError) {
+        // Sin el código guardado, verify-otp nunca podría validarlo: no se
+        // envía un OTP inservible ni se informa éxito.
+        logError("send-otp: no se pudo guardar el OTP", dbError);
+        return json({
+          success: false,
+          error: "No se pudo generar el código. Intente nuevamente en unos minutos.",
+        }, 500);
+      }
 
-      await sendOtpByWhatsApp(cleanPhone, otpCode);
+      const sent = await sendOtpByWhatsApp(cleanPhone, otpCode);
+      if (!sent) {
+        return json({
+          success: false,
+          error: "No se pudo enviar el código por WhatsApp. Intente nuevamente en unos minutos.",
+        }, 502);
+      }
 
       return json({
         success: true,
@@ -453,7 +488,7 @@ serve(async (req) => {
         passwordHash = await hashBcrypt(password);
         pinHash = await hashBcrypt(pin);
       } catch (hashErr) {
-        console.error("Error bcrypt:", hashErr);
+        logError("register: error bcrypt", hashErr);
         return json({ success: false, error: "Error procesando credenciales." }, 500);
       }
 
@@ -527,7 +562,7 @@ serve(async (req) => {
               .update({ password_hash: await hashBcrypt(String(password)) })
               .eq("id_persona", persona.id_persona);
           } catch (e) {
-            console.warn("No se pudo re-hashear a bcrypt:", e);
+            // Log reducido
           }
         }
       }
@@ -1123,7 +1158,7 @@ serve(async (req) => {
 
     return json({ success: false, error: "Acción no válida" }, 400);
   } catch (err) {
-    console.error("Error en security:", err);
+    logError("error no controlado", err);
     return json({ success: false, error: (err as Error).message }, 500);
   }
 });

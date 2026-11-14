@@ -61,6 +61,15 @@ async function verifiedDniFromToken(authHeader: string | null): Promise<string |
   }
 }
 
+// Observabilidad mínima: solo errores críticos, con etiqueta y código/mensaje
+// del error. Nunca datos del ciudadano, coordenadas, mensajes ni tokens.
+function logError(context: string, err: unknown): void {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  const code = e && typeof e === 'object' && e.code ? ` [${String(e.code)}]` : '';
+  const msg = e && typeof e === 'object' && e.message ? String(e.message) : String(err);
+  console.error(`[alerts] ${context}${code}: ${msg.slice(0, 200)}`);
+}
+
 serve(async (req) => {
   // Manejo de preflight CORS
   if (req.method === 'OPTIONS') {
@@ -173,7 +182,7 @@ serve(async (req) => {
     let reportId: number | null = payload.reportId ? Number(payload.reportId) : null;
     if (!reportId && !payload.alreadySaved) {
       try {
-        const { data: repData } = await supabase
+        const { data: repData, error: repError } = await supabase
           .from('reporte')
           .insert({
             id_persona: idPersona,
@@ -185,16 +194,19 @@ serve(async (req) => {
           .select('id_reporte')
           .maybeSingle();
 
+        if (repError) logError('no se pudo insertar el reporte', repError);
+
         if (repData?.id_reporte) {
           reportId = repData.id_reporte;
-          await supabase.from('ubicacion').insert({
+          const { error: ubiError } = await supabase.from('ubicacion').insert({
             id_reporte: reportId,
             latitud: coordinates.lat,
             longitud: coordinates.lon,
           });
+          if (ubiError) logError('no se pudo insertar la ubicación', ubiError);
         }
       } catch (repErr) {
-        console.warn('Advertencia al insertar reporte en Supabase:', repErr);
+        logError('excepción al registrar el reporte', repErr);
       }
     }
 
@@ -214,6 +226,7 @@ serve(async (req) => {
       }
     );
   } catch (error) {
+    logError('error no controlado', error);
     return new Response(
       JSON.stringify({ success: false, error: (error as Error).message }),
       {
