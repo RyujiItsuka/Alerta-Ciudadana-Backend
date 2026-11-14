@@ -54,8 +54,25 @@ Ningún cambio se escribe directamente sobre `main` ni sobre `desarrollo`.
 
 ## 3. Protección de rama configurada
 
+Estado verificado en GitHub el 2026-11-14:
+
 | Regla | `main` | `desarrollo` |
 |---|---|---|
+| Cambios solo por pull request | Sí | Sí |
+| Aprobaciones obligatorias | **0** | 0 |
+| Estado de CI obligatorio antes del merge | Sí (`Compilar TypeScript`) | Sí (`Compilar TypeScript`) |
+| Push forzado | Bloqueado | Bloqueado |
+| Borrado de la rama | Bloqueado | Bloqueado |
+| Aplicable también a administradores | Sí | Sí |
+
+**Nota sobre `main`:** el repositorio tiene un único mantenedor. Exigir una
+aprobación mientras las reglas se aplican también al administrador impediría
+fusionar cualquier PR, porque GitHub no permite aprobar el propio PR. Por eso,
+hoy la garantía en `main` es el PR obligatorio más el CI en verde. Cuando
+haya un segundo revisor con permisos, hay que subir a **1 aprobación** las
+aprobaciones obligatorias de `main` (y opcionalmente de `desarrollo`).
+
+---|---|---|
 | Cambios solo por pull request | Sí | Sí |
 | Revisión obligatoria | 1 aprobación | No |
 | Estado de CI obligatorio antes del merge | Sí (`Compilar TypeScript`) | Sí (`Compilar TypeScript`) |
@@ -85,14 +102,13 @@ Archivo: `.github/workflows/ci.yml`
 | Qué valida | `npm ci` (dependencias reproducibles) + `npm run build` (`tsc`: type-check y compilación) + existencia de `dist/server.js` |
 | Efecto | Si falla, el PR queda bloqueado y no se puede fusionar |
 
-**Edge Functions (`supabase/functions`).** Se despliegan con
-`supabase functions deploy`, que publica el código tal cual. No se incluyen en
-el job de compilación porque sus dependencias se importan por URL (`esm.sh`,
-`deno.land`) y el chequeo de tipos de Deno reporta hoy dos incompatibilidades
-preexistentes en esas librerías (`bcryptjs` sin export por defecto y tipado de
-`Uint8Array` en WebCrypto) que no afectan al runtime. Su verificación es el
-despliegue más la prueba funcional de los endpoints (`login`, `verify-token`,
-`update-pin`, `update-reporte-estado`).
+**Edge Functions (`supabase/functions`).** Desde el 2026-11-14 hay un segundo
+job, `Validar Edge Functions (Deno)`, que ejecuta `deno check` en todas las
+funciones con Deno v2.9.6. Todavía no figura entre los checks obligatorios de la
+protección de rama; para incluirlo hay que añadirlo en la configuración de
+GitHub. El despliegue (`supabase functions deploy <nombre> --remote=<ref>`)
+sigue siendo manual y debe ir seguido de una prueba funcional de los
+endpoints afectados.
 
 ---
 
