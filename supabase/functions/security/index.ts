@@ -45,6 +45,14 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 // URL de la Edge Function hermana "whatsapp" (envía OTP por Green API).
 const WHATSAPP_FN_URL = `${SUPABASE_URL}/functions/v1/whatsapp`;
 
+// Normaliza un celular peruano a solo dígitos con prefijo 51. Se aplica tanto
+// al teléfono recibido como al registrado en persona (que puede estar guardado
+// con 9 dígitos o con el 51), para que ambos se comparen en el mismo formato.
+function normalizePhone(value: unknown): string {
+  const digits = String(value ?? "").replace(/[^0-9]/g, "");
+  return digits.length === 9 ? `51${digits}` : digits;
+}
+
 // ---- Observabilidad mínima ----
 // Solo para errores críticos. Registra una etiqueta y el código/mensaje del
 // error, NUNCA datos del ciudadano (DNI, teléfono), códigos OTP, contraseñas
@@ -305,8 +313,7 @@ serve(async (req) => {
       if (!dni || !phone) {
         return json({ success: false, error: "DNI y celular son obligatorios" }, 400);
       }
-      let cleanPhone = String(phone).replace(/[^0-9]/g, "");
-      if (cleanPhone.length === 9) cleanPhone = `51${cleanPhone}`;
+      const cleanPhone = normalizePhone(phone);
 
       // SEGURIDAD: si el DNI ya está registrado, el OTP SOLO puede enviarse al
       // teléfono registrado. Sin esta validación un tercero podría pedir el
@@ -318,7 +325,7 @@ serve(async (req) => {
         .eq("dni", dni)
         .maybeSingle();
       if (personaDestino) {
-        const telefonoRegistrado = String(personaDestino.telefono ?? "").replace(/[^0-9]/g, "");
+        const telefonoRegistrado = normalizePhone(personaDestino.telefono);
         if (telefonoRegistrado !== cleanPhone) {
           return json({
             success: false,
@@ -369,8 +376,7 @@ serve(async (req) => {
     // =========================================================================
     if (action === "verify-otp") {
       const { dni, phone, code } = body;
-      let cleanPhone = (phone || "").replace(/[^0-9]/g, "");
-      if (cleanPhone.length === 9) cleanPhone = `51${cleanPhone}`;
+      const cleanPhone = normalizePhone(phone);
 
       const now = new Date().toISOString();
       let otpQuery = supabase
