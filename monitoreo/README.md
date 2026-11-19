@@ -21,6 +21,26 @@ Son alertas **técnicas** (el sistema falla), no emergencias ciudadanas.
 | `CertificadoPorVencer` | advertencia | El certificado TLS vence en menos de 14 días |
 | `DiscoCasiLleno`, `MemoriaAlta`, `CPUAlta`, `ConexionesAltas` | advertencia | Recursos de la base de datos por encima del 80–90 % |
 
+### Métricas definidas por el equipo
+
+Se calculan como series propias (`prometheus/recording.yml`) y se pueden
+consultar o graficar por su nombre.
+
+| Métrica | Serie | Advertencia | Crítica | Acción |
+|---|---|---|---|---|
+| Tamaño de la BD (límite 500 MB) | `alerta:bd_tamano_ratio`, `alerta:bd_tamano_mb` | > 70 % (350 MB) | > 85 % (425 MB) | Revisar qué tablas crecen y planificar limpieza / abrir incidente y archivar reportes atendidos |
+| Uso de CPU | `alerta:cpu_uso_ratio` | > 70 % durante 10 min | > 90 % durante 5 min | Buscar consultas pesadas o picos / abrir incidente y bloquear IP si es tráfico anómalo |
+| Latencia de la BD | `alerta:bd_latencia_segundos`, `alerta:bd_disponible` | > 300 ms en 3 chequeos seguidos | > 1 s o sin respuesta (1 min) | Revisar consultas lentas, conexiones y CPU / cerrar conexiones colgadas |
+
+**Latencia:** se mide cada 30 s con una consulta mínima de solo lectura a
+PostgREST (`tipo_incidencia`, 1 fila) y se toma la fase de *procesamiento*
+del servidor. El tiempo total desde Perú hasta São Paulo ronda los 350 ms
+solo por la red, así que no sirve para medir la salud de la base de datos.
+Valor normal medido: unos 150 ms.
+
+**Pruebas de las reglas** (datos simulados):
+`docker exec ac-prometheus promtool test rules /etc/prometheus/alerts_test.yml`
+
 Las funciones se comprueban con una petición `OPTIONS` (preflight CORS): no
 ejecutan lógica, no escriben datos y no envían WhatsApp.
 

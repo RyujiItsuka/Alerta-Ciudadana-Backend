@@ -1,0 +1,115 @@
+# Pruebas unitarias de las métricas definidas (datos simulados).
+# Ejecutar:  docker exec ac-prometheus promtool test rules /etc/prometheus/alerts_test.yml
+rule_files:
+  - recording.yml
+  - alerts.yml
+
+evaluation_interval: 30s
+
+tests:
+  # --- 1. Tamaño de la base de datos (límite 500 MB) -------------------------
+  - name: tamano_bd
+    interval: 1m
+    input_series:
+      # 300 MB (60 %) durante 15 min, luego 360 MB (72 %), luego 440 MB (88 %)
+      - series: 'pg_database_size_mb{job="supabase",server="localhost:5432"}'
+        values: '300x15 360x15 440x15'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: BaseDatosTamanoAdvertencia
+        exp_alerts: []
+      - eval_time: 28m
+        alertname: BaseDatosTamanoAdvertencia
+        exp_alerts:
+          - exp_labels: { severity: warning, metrica: tamano-bd }
+            exp_annotations:
+              summary: "Base de datos al 72% del límite de 500 MB"
+              description: "Supera el 70 % (350 MB). Acción: revisar qué tablas crecen y planificar una limpieza."
+      - eval_time: 28m
+        alertname: BaseDatosTamanoCritico
+        exp_alerts: []
+      - eval_time: 44m
+        alertname: BaseDatosTamanoCritico
+        exp_alerts:
+          - exp_labels: { severity: critical, metrica: tamano-bd }
+            exp_annotations:
+              summary: "Base de datos al 88% del límite de 500 MB"
+              description: "Supera el 85 % (425 MB). Acción: abrir un incidente y archivar los reportes ya atendidos."
+
+  # --- 2. CPU ----------------------------------------------------------------
+  - name: cpu
+    interval: 1m
+    input_series:
+      # 2 CPUs. 0–20 min: 50 % ocupado; 20–40 min: 80 %; 40–60 min: 95 %.
+      - series: 'node_cpu_seconds_total{job="supabase",cpu="0",mode="idle"}'
+        values: '0+30x20 600+12x20 840+3x20'
+      - series: 'node_cpu_seconds_total{job="supabase",cpu="0",mode="user"}'
+        values: '0+30x20 600+48x20 1560+57x20'
+      - series: 'node_cpu_seconds_total{job="supabase",cpu="1",mode="idle"}'
+        values: '0+30x20 600+12x20 840+3x20'
+      - series: 'node_cpu_seconds_total{job="supabase",cpu="1",mode="user"}'
+        values: '0+30x20 600+48x20 1560+57x20'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: CPUAdvertencia
+        exp_alerts: []
+      - eval_time: 38m
+        alertname: CPUAdvertencia
+        exp_alerts:
+          - exp_labels: { severity: warning, metrica: cpu }
+            exp_annotations:
+              summary: "CPU de la base de datos al 80% durante 10 min"
+              description: "Acción: identificar consultas pesadas, picos de tráfico u otra causa del uso excesivo de CPU."
+      - eval_time: 38m
+        alertname: CPUCritico
+        exp_alerts: []
+      - eval_time: 55m
+        alertname: CPUCritico
+        exp_alerts:
+          - exp_labels: { severity: critical, metrica: cpu }
+            exp_annotations:
+              summary: "CPU de la base de datos al 95% durante 5 min"
+              description: "Acción: abrir un incidente; si es tráfico anómalo, bloquear la IP de origen."
+
+  # --- 3. Latencia de la base de datos (sonda cada 30 s) ---------------------
+  - name: latencia_bd
+    interval: 30s
+    input_series:
+      # 150 ms x6, dos picos aislados de 400 ms (no deben alertar), luego
+      # 350 ms sostenidos (alerta tras 3 chequeos), luego 1,5 s (crítica).
+      - series: 'probe_http_duration_seconds{job="bd-latencia",phase="processing"}'
+        values: '0.15x5 0.4 0.15 0.4 0.15 0.35x7 1.5x4'
+      - series: 'probe_success{job="bd-latencia"}'
+        values: '1x24'
+    alert_rule_test:
+      - eval_time: 4m30s
+        alertname: BaseDatosLatenciaAdvertencia
+        exp_alerts: []
+      - eval_time: 6m30s
+        alertname: BaseDatosLatenciaAdvertencia
+        exp_alerts:
+          - exp_labels: { severity: warning, metrica: latencia-bd }
+            exp_annotations:
+              summary: "Latencia de la base de datos > 300 ms en 3 chequeos seguidos (350ms)"
+              description: "Acción: revisar consultas lentas, conexiones abiertas o uso de CPU."
+      - eval_time: 10m30s
+        alertname: BaseDatosLatenciaCritica
+        exp_alerts:
+          - exp_labels: { severity: critical, metrica: latencia-bd }
+            exp_annotations:
+              summary: "Base de datos sin respuesta o con latencia > 1 s"
+              description: "Acción: cerrar las conexiones colgadas."
+
+  - name: bd_sin_respuesta
+    interval: 30s
+    input_series:
+      - series: 'probe_success{job="bd-latencia"}'
+        values: '1x4 0x6'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: BaseDatosLatenciaCritica
+        exp_alerts:
+          - exp_labels: { severity: critical, metrica: latencia-bd }
+            exp_annotations:
+              summary: "Base de datos sin respuesta o con latencia > 1 s"
+              description: "Acción: cerrar las conexiones colgadas."

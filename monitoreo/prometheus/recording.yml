@@ -1,0 +1,28 @@
+# Métricas definidas por el equipo, calculadas como series propias
+# (recording rules). Se consultan y grafican por su nombre en Prometheus y
+# Grafana, y las alertas de "metricas_definidas" se basan en ellas.
+
+groups:
+  - name: metricas_definidas
+    interval: 30s
+    rules:
+      # 1. Tamaño de la base de datos frente al límite de 500 MB del plan
+      #    (0–1; 0.70 = 350 MB, 0.85 = 425 MB).
+      - record: alerta:bd_tamano_mb
+        expr: max(pg_database_size_mb{job="supabase"})
+      - record: alerta:bd_tamano_ratio
+        expr: max(pg_database_size_mb{job="supabase"}) / 500
+
+      # 2. Uso de CPU de la base de datos (0–1): tiempo ocupado / total.
+      #    Sin datos nuevos del endpoint da NaN (no un falso 100 %).
+      - record: alerta:cpu_uso_ratio
+        expr: |
+          sum(rate(node_cpu_seconds_total{job="supabase",mode!="idle"}[5m]))
+            / sum(rate(node_cpu_seconds_total{job="supabase"}[5m]))
+
+      # 3. Latencia de la base de datos (segundos): procesamiento en el
+      #    servidor de una consulta mínima vía PostgREST (sonda cada 30 s).
+      - record: alerta:bd_latencia_segundos
+        expr: max(probe_http_duration_seconds{job="bd-latencia",phase="processing"})
+      - record: alerta:bd_disponible
+        expr: max(probe_success{job="bd-latencia"})

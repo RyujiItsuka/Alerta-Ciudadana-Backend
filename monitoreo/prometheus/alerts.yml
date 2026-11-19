@@ -64,17 +64,6 @@ groups:
         annotations:
           summary: "Memoria de la base de datos al {{ $value | humanizePercentage }}"
 
-      - alert: CPUAlta
-        # Fracción ocupada = no-idle / total. Si el endpoint aún no actualizó
-        # los contadores, da NaN (no dispara) en vez de un falso 100 %.
-        expr: |
-          sum by (instance) (rate(node_cpu_seconds_total{job="supabase",mode!="idle"}[10m]))
-            / sum by (instance) (rate(node_cpu_seconds_total{job="supabase"}[10m])) > 0.85
-        for: 15m
-        labels: { severity: warning }
-        annotations:
-          summary: "CPU de la base de datos al {{ $value | humanizePercentage }}"
-
       - alert: PostgresCaido
         expr: pg_up{job="supabase"} == 0
         for: 2m
@@ -89,3 +78,63 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "Conexiones a PostgreSQL al {{ $value | humanizePercentage }} del máximo"
+
+  # ---------------------------------------------------------------------------
+  # Métricas definidas por el equipo (umbrales y acciones acordados).
+  # ---------------------------------------------------------------------------
+  - name: metricas_definidas
+    rules:
+      # Tamaño de la base de datos frente al límite de 500 MB del plan.
+      - alert: BaseDatosTamanoAdvertencia
+        expr: alerta:bd_tamano_ratio > 0.70
+        for: 10m
+        labels: { severity: warning, metrica: tamano-bd }
+        annotations:
+          summary: "Base de datos al {{ $value | humanizePercentage }} del límite de 500 MB"
+          description: "Supera el 70 % (350 MB). Acción: revisar qué tablas crecen y planificar una limpieza."
+
+      - alert: BaseDatosTamanoCritico
+        expr: alerta:bd_tamano_ratio > 0.85
+        for: 10m
+        labels: { severity: critical, metrica: tamano-bd }
+        annotations:
+          summary: "Base de datos al {{ $value | humanizePercentage }} del límite de 500 MB"
+          description: "Supera el 85 % (425 MB). Acción: abrir un incidente y archivar los reportes ya atendidos."
+
+      # Uso de CPU. Fracción ocupada = no-idle / total; sin datos nuevos da
+      # NaN y no dispara (evita el falso 100 % del endpoint de Supabase).
+      - alert: CPUAdvertencia
+        expr: alerta:cpu_uso_ratio > 0.70
+        for: 10m
+        labels: { severity: warning, metrica: cpu }
+        annotations:
+          summary: "CPU de la base de datos al {{ $value | humanizePercentage }} durante 10 min"
+          description: "Acción: identificar consultas pesadas, picos de tráfico u otra causa del uso excesivo de CPU."
+
+      - alert: CPUCritico
+        expr: alerta:cpu_uso_ratio > 0.90
+        for: 5m
+        labels: { severity: critical, metrica: cpu }
+        annotations:
+          summary: "CPU de la base de datos al {{ $value | humanizePercentage }} durante 5 min"
+          description: "Acción: abrir un incidente; si es tráfico anómalo, bloquear la IP de origen."
+
+      # Latencia de la base de datos: tiempo de procesamiento en el servidor de
+      # una consulta mínima vía PostgREST (sonda cada 30 s, job bd-latencia).
+      # Se mide la fase "processing" (sin el viaje de red de ida), porque el
+      # tiempo total desde Perú a São Paulo ya ronda los 350 ms.
+      - alert: BaseDatosLatenciaAdvertencia
+        # 3 chequeos seguidos (cada 30 s) por encima de 300 ms.
+        expr: min_over_time(alerta:bd_latencia_segundos[90s]) > 0.300
+        labels: { severity: warning, metrica: latencia-bd }
+        annotations:
+          summary: "Latencia de la base de datos > 300 ms en 3 chequeos seguidos ({{ $value | humanizeDuration }})"
+          description: "Acción: revisar consultas lentas, conexiones abiertas o uso de CPU."
+
+      - alert: BaseDatosLatenciaCritica
+        expr: alerta:bd_latencia_segundos > 1 or alerta:bd_disponible == 0
+        for: 1m
+        labels: { severity: critical, metrica: latencia-bd }
+        annotations:
+          summary: "Base de datos sin respuesta o con latencia > 1 s"
+          description: "Acción: cerrar las conexiones colgadas."

@@ -5,6 +5,7 @@ global:
     proyecto: alerta-ciudadana
 
 rule_files:
+  - /etc/prometheus/recording.yml
   - /etc/prometheus/alerts.yml
 
 alerting:
@@ -55,6 +56,19 @@ scrape_configs:
           - https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/reportes
           - https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/whatsapp
         labels: { servicio: edge-functions }
+    relabel_configs: *blackbox_relabel
+
+  # Latencia de la base de datos (ver regla BaseDatosLatencia*): cada 30 s
+  # para poder exigir "3 chequeos seguidos" en 90 s.
+  - job_name: bd-latencia
+    scrape_interval: 30s
+    metrics_path: /probe
+    params:
+      module: [http_postgrest]
+    static_configs:
+      - targets:
+          - https://emtzprcntefzkvvzmhfk.supabase.co/rest/v1/tipo_incidencia?select=id_tipo&limit=1
+        labels: { servicio: base-de-datos }
     relabel_configs: *blackbox_relabel
 
   - job_name: prometheus
