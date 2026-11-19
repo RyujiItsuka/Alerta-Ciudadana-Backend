@@ -1,0 +1,79 @@
+# Reglas de alerta técnicas. severity: critical | warning
+# Las reglas de Supabase (node_* / pg_*) usan los nombres estándar de
+# node_exporter y postgres_exporter que publica el endpoint de métricas;
+# confirmar en http://127.0.0.1:9090 (Explore) tras el primer scrape y ajustar
+# si alguna métrica no existe (una regla con métrica inexistente no dispara).
+
+groups:
+  - name: disponibilidad
+    rules:
+      - alert: PanelWebCaido
+        expr: probe_success{job="web"} == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "El panel de la Central no responde"
+          description: "{{ $labels.instance }} falla desde hace 3 min. Los operadores no pueden ver alertas."
+
+      - alert: EdgeFunctionCaida
+        expr: probe_success{job="edge-functions"} == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations:
+          summary: "Edge Function sin respuesta"
+          description: "{{ $labels.instance }} no responde desde hace 3 min."
+
+      - alert: EdgeFunctionLenta
+        expr: probe_duration_seconds{job="edge-functions"} > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Edge Function lenta"
+          description: "{{ $labels.instance }} tarda {{ $value | humanizeDuration }} en responder."
+
+      - alert: CertificadoPorVencer
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "Certificado TLS por vencer"
+          description: "El certificado de {{ $labels.instance }} vence en {{ $value | printf \"%.0f\" }} días."
+
+  - name: supabase
+    rules:
+      - alert: SupabaseSinMetricas
+        expr: up{job="supabase"} == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "No se pueden leer las métricas de Supabase"
+          description: "El endpoint de métricas no responde o rechaza la clave desde hace 5 min."
+
+      - alert: DiscoCasiLleno
+        expr: max by (instance) (1 - node_filesystem_avail_bytes{job="supabase",mountpoint="/data"} / node_filesystem_size_bytes{job="supabase",mountpoint="/data"}) > 0.80
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Disco de la base de datos al {{ $value | humanizePercentage }}"
+          description: "Revisar crecimiento de tablas (p. ej. ubicacion) antes de llegar al límite del plan."
+
+      - alert: MemoriaAlta
+        expr: 1 - node_memory_MemAvailable_bytes{job="supabase"} / node_memory_MemTotal_bytes{job="supabase"} > 0.90
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Memoria de la base de datos al {{ $value | humanizePercentage }}"
+
+      - alert: CPUAlta
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{job="supabase",mode="idle"}[5m])) > 0.85
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "CPU de la base de datos al {{ $value | humanizePercentage }}"
+
+      - alert: ConexionesAltas
+        expr: sum(pg_stat_database_numbackends{job="supabase"}) / max(pg_settings_max_connections{job="supabase"}) > 0.80
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Conexiones a PostgreSQL al {{ $value | humanizePercentage }} del máximo"
