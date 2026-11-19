@@ -1,8 +1,8 @@
 # Reglas de alerta técnicas. severity: critical | warning
-# Las reglas de Supabase (node_* / pg_*) usan los nombres estándar de
-# node_exporter y postgres_exporter que publica el endpoint de métricas;
-# confirmar en http://127.0.0.1:9090 (Explore) tras el primer scrape y ajustar
-# si alguna métrica no existe (una regla con métrica inexistente no dispara).
+# Reglas de Supabase verificadas el 2026-11-19 contra el endpoint real
+# (319 métricas: node_*, pg_*, pgbouncer_*, realtime_*...). Si Supabase
+# cambia un nombre, la regla deja de disparar: revisar en Prometheus (Explore)
+# y ajustar.
 
 groups:
   - name: disponibilidad
@@ -65,14 +65,26 @@ groups:
           summary: "Memoria de la base de datos al {{ $value | humanizePercentage }}"
 
       - alert: CPUAlta
-        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{job="supabase",mode="idle"}[5m])) > 0.85
+        # Fracción ocupada = no-idle / total. Si el endpoint aún no actualizó
+        # los contadores, da NaN (no dispara) en vez de un falso 100 %.
+        expr: |
+          sum by (instance) (rate(node_cpu_seconds_total{job="supabase",mode!="idle"}[10m]))
+            / sum by (instance) (rate(node_cpu_seconds_total{job="supabase"}[10m])) > 0.85
         for: 15m
         labels: { severity: warning }
         annotations:
           summary: "CPU de la base de datos al {{ $value | humanizePercentage }}"
 
+      - alert: PostgresCaido
+        expr: pg_up{job="supabase"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL de Supabase no responde"
+          description: "La base de datos está caída: no se registran alertas ni sesiones."
+
       - alert: ConexionesAltas
-        expr: sum(pg_stat_database_numbackends{job="supabase"}) / max(pg_settings_max_connections{job="supabase"}) > 0.80
+        expr: sum(pg_stat_database_num_backends{job="supabase"}) / max(max_connections_connection_count{job="supabase"}) > 0.80
         for: 10m
         labels: { severity: warning }
         annotations:
