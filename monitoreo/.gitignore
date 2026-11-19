@@ -1,0 +1,3 @@
+# Secretos del monitoreo: NUNCA subir a Git.
+secrets/*
+!secrets/LEEME.md

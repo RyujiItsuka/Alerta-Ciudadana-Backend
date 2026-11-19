@@ -1,0 +1,62 @@
+global:
+  scrape_interval: 60s
+  evaluation_interval: 60s
+  external_labels:
+    proyecto: alerta-ciudadana
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # Métricas de la base de datos y la máquina del proyecto de Supabase.
+  # Autenticación: usuario service_role + clave secreta del proyecto, leída
+  # desde un archivo (nunca escrita aquí).
+  - job_name: supabase
+    scheme: https
+    metrics_path: /customer/v1/privileged/metrics
+    scrape_timeout: 30s
+    static_configs:
+      - targets: ["emtzprcntefzkvvzmhfk.supabase.co"]
+    basic_auth:
+      username: service_role
+      password_file: /run/secrets/supabase_metrics_key
+
+  # Disponibilidad vista desde fuera (Blackbox): panel web y Edge Functions.
+  # Para las funciones se usa OPTIONS (preflight CORS): responde 200 sin
+  # autenticación, sin ejecutar lógica ni escribir datos.
+  - job_name: web
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["https://alertaciudadana.pages.dev"]
+        labels: { servicio: panel-web }
+    relabel_configs: &blackbox_relabel
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: edge-functions
+    metrics_path: /probe
+    params:
+      module: [http_options_2xx]
+    static_configs:
+      - targets:
+          - https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/security
+          - https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/alerts
+          - https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/reportes
+          - https://emtzprcntefzkvvzmhfk.supabase.co/functions/v1/whatsapp
+        labels: { servicio: edge-functions }
+    relabel_configs: *blackbox_relabel
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
