@@ -1,7 +1,7 @@
 # Plan de respaldos y recuperación ante desastres
 
 Proyecto: **Alerta Ciudadana Pisco**
-Versión: 1.0 — 2026-11-25
+Versión: 1.1 — 2026-11-25 (pasos 2 y 3 ejecutados)
 Alcance: base de datos (Supabase/PostgreSQL), Edge Functions, panel web,
 aplicación móvil, secretos y monitoreo.
 
@@ -43,19 +43,20 @@ app) es prioritaria.
 
 | Componente | Criticidad | RPO | RTO | Cómo se cumple |
 |---|---|---|---|---|
-| **Base de datos** (reportes, ubicaciones, personas, sesiones) | Crítica | **6 h** | **1 h** | Respaldo lógico automático cada 6 h; restauración probada (sección 9). |
+| **Base de datos** (reportes, ubicaciones, personas, sesiones) | Crítica | **7 días** | **1 h** | Respaldo lógico automático semanal (sección 8); restauración probada en **7,7 s** (sección 9). |
 | **Proyecto pausado** (plan gratuito) | Crítica | 0 (no se pierden datos) | **30 min** | Reactivar desde el dashboard; alerta en Discord + actividad periódica para evitar la pausa. |
 | **Edge Functions** (`security`, `alerts`, `reportes`, `whatsapp`, `reniec`) | Crítica | 0 (Git) | **30 min** | `supabase functions deploy` desde `main`. |
 | **Panel web** (Cloudflare Pages) | Alta | 0 (Git) | **30 min** | Reversión a un despliegue anterior en Cloudflare o nuevo despliegue desde `main`. |
 | **Secretos** (`JWT_SECRET_KEY`, Green API, `RENIEC_CACHE_KEY`) | Crítica | 0 | **30 min** | Copia en un gestor de contraseñas del equipo (nunca en Git). |
 | **App móvil** (APK) | Alta | 0 (Git) | **4 h** (APK nuevo) | Compilar desde `main`; publicar APK. Solo hace falta si cambia la URL del proyecto. |
 | **Monitoreo** | Media | 0 (Git) | **1 h** | `docker compose up -d` en `monitoreo/` con los secretos. |
-| **Desastre total** (pérdida del proyecto de Supabase) | — | **6 h** | **6 h** | Nuevo proyecto + restaurar respaldo + secretos + funciones + APK nuevo (sección 6, escenario E). |
+| **Desastre total** (pérdida del proyecto de Supabase) | — | **7 días** | **6 h** | Nuevo proyecto + restaurar respaldo + secretos + funciones + APK nuevo (sección 6, escenario E). |
 
-**Por qué RPO de 6 h y no menos:** el plan gratuito no tiene PITR. Bajar a
-minutos exige el plan Pro con el complemento de PITR (de pago). Con el volumen
-actual (pocos reportes al día), 6 h es un compromiso razonable; si el uso
-crece, la sección 10 propone cómo bajarlo.
+**Por qué RPO de 7 días:** el plan gratuito no tiene PITR ni respaldos
+gestionados, y el equipo decidió un respaldo **semanal** por el bajo volumen de
+datos del proyecto académico. Para bajar el RPO basta con cambiar el cron del
+flujo (p. ej. diario → RPO 24 h; el tráfico seguiría muy por debajo del límite
+gratuito) o, en producción real, usar el plan Pro con PITR (RPO de minutos).
 
 ---
 
@@ -79,25 +80,27 @@ proyecto no usa para sus datos.
 
 ## 4. Frecuencia y retención
 
-| Tipo | Frecuencia | Retención | Copias |
+| Tipo | Frecuencia | Retención | Dónde |
 |---|---|---|---|
-| Respaldo de la base (esquema + datos + roles) | Cada **6 h** (00:00, 06:00, 12:00, 18:00 hora de Lima) | **7 días** (28 copias) | 2 ubicaciones |
-| Respaldo semanal | Domingo 00:00 | **4 semanas** | 2 ubicaciones |
-| Respaldo mensual | Día 1, 00:00 | **6 meses** | 2 ubicaciones |
+| Respaldo semanal de la base (roles + esquema + datos) | Cada **domingo 00:00** hora de Lima (cron `0 5 * * 0`) | **35 días** (5 copias) | Artefactos de GitHub Actions en un repositorio **privado** |
+| Respaldo mensual | El **primer domingo** de cada mes | **90 días** | Ídem |
+| Respaldo manual (antes de un cambio importante) | A demanda | **35 días** | Ídem |
 | Código | Cada PR (GitHub) | Indefinida | GitHub + clones locales |
 
 **Reglas de los respaldos de la base:**
 1. **Cifrados** antes de guardarse (contienen DNI, teléfonos y ubicaciones de
    ciudadanos). La clave de cifrado se guarda en el gestor de contraseñas.
-2. **Dos ubicaciones** (regla 3-2-1 simplificada): el equipo que ejecuta el
-   respaldo y un almacenamiento externo (por ejemplo, una carpeta de nube
-   privada del equipo).
-3. **Verificación** en cada ejecución: el script comprueba que el archivo no
-   esté vacío y registra tamaño y duración; si falla, avisa por Discord.
+2. **Ubicación:** hoy los respaldos están en **una sola ubicación** (artefactos
+   del repositorio privado de GitHub). Lo recomendable (regla 3-2-1) es una
+   segunda copia fuera de GitHub, p. ej. una carpeta privada en la nube del
+   equipo; queda como mejora.
+3. **Verificación** en cada ejecución: el script comprueba que existan las
+   tablas principales y los datos de `reporte`, genera sumas SHA-256 y un
+   manifiesto; si falla, avisa por Discord.
 4. **Acceso restringido** al responsable de respaldos y al responsable técnico.
 
-Con 78,6 MB de base, 28 + 4 + 6 = 38 copias comprimidas ocupan del orden de
-cientos de MB: el coste de almacenamiento es despreciable.
+Cada respaldo ocupa **2,2 MB cifrado** (21,7 MB sin comprimir): con la
+retención anterior se guardan menos de 20 MB.
 
 ---
 
@@ -128,8 +131,9 @@ Síntoma: API y base no responden; el dashboard muestra el proyecto "Paused".
 2. Esperar estado `ACTIVE_HEALTHY` (minutos).
 3. Verificar: consulta a `tipo_incidencia` responde 200; `login-staff` responde;
    el panel carga alertas.
-4. Prevención: actividad periódica (el propio respaldo cada 6 h ya genera
-   actividad) y alerta `SupabaseSinMetricas` en Discord.
+4. Prevención: actividad periódica (el respaldo semanal genera actividad, pero
+   queda justo en el límite de ~7 días: conviene un ping diario) y alerta
+   `SupabaseSinMetricas` en Discord.
 
 ### B. Borrado o corrupción de datos (error humano, script, prueba de carga)
 1. Identificar qué tablas y desde cuándo están afectadas.
@@ -170,7 +174,7 @@ Síntoma: API y base no responden; el dashboard muestra el proyecto "Paused".
 
 | Dato | Valor |
 |---|---|
-| Detección | 2026-11-25 05:31 (hora de Lima), al revisar el estado para este plan |
+| Detección | 2026-11-25 00:31 hora de Lima (05:31 UTC), al revisar el estado para este plan |
 | Estado | `INACTIVE` (pausado por inactividad del plan gratuito) |
 | Impacto | API, base de datos y Edge Functions sin respuesta (`HTTP 000`): la app no registra reportes, **el aviso por WhatsApp a la Central tampoco sale** (pasa por las Edge Functions) y el panel no carga datos |
 | Por qué no hubo alerta | El monitoreo corre en un PC que tenía Docker apagado |
@@ -179,24 +183,64 @@ Síntoma: API y base no responden; el dashboard muestra el proyecto "Paused".
 
 ---
 
-## 8. Automatización (Paso 2)
+## 8. Automatización (Paso 2) — implementado
 
-*Pendiente.* Script con `supabase db dump` (roles, esquema, datos), compresión
-y cifrado, rotación según la sección 4, ejecutado por cron (Linux) o el
-Programador de tareas (Windows) cada 6 h, con aviso a Discord si falla.
+Repositorio **privado** `RyujiItsuka/Alerta-Ciudadana-Respaldos`.
 
-## 9. Prueba de restauración (Paso 3)
+| Pieza | Archivo | Qué hace |
+|---|---|---|
+| Cron | `.github/workflows/respaldo-semanal.yml` | `cron: "0 5 * * 0"` → cada domingo 00:00 hora de Lima; también ejecución manual. Calcula la retención, guarda el artefacto y avisa a Discord si falla. |
+| Script | `scripts/respaldo-bd.sh` | `supabase db dump` de roles, esquema y datos (con reintentos), controles de contenido, SHA-256, compresión y **cifrado GPG AES-256**, manifiesto. |
+| Restauración | `scripts/restaurar-bd.sh` | Descifra, verifica, restaura y mide cada etapa. |
 
-*Pendiente.* Restaurar un respaldo en el entorno local de Supabase (Docker),
-medir el tiempo real de cada etapa y compararlo con el RTO; verificar conteos
-de filas frente a producción. Segunda instancia: el entorno local (o una
-máquina en Oracle Cloud) con el último respaldo.
+Secretos (GitHub): token de Supabase limitado al proyecto (Project Settings y
+Connection Pooling: lectura; Database: escritura, necesaria porque la CLI crea
+un usuario temporal para volcar), frase de cifrado y webhook de Discord.
 
-Plantilla de registro:
+**Evidencia (2026-11-25):**
 
-| Fecha | Respaldo usado (hora) | Inicio | Fin | Tiempo real | RTO objetivo | ¿Cumple? | Filas verificadas |
-|---|---|---|---|---|---|---|---|
-| | | | | | 1 h | | |
+| Ejecución | Resultado |
+|---|---|
+| [Run 45742614499](https://github.com/RyujiItsuka/Alerta-Ciudadana-Respaldos/actions/runs/45742614499) | ❌ Falló (token sin `database_write`). **El aviso de fallo llegó a Discord**, validando la alerta. |
+| [Run 45743269580](https://github.com/RyujiItsuka/Alerta-Ciudadana-Respaldos/actions/runs/45743269580) | ✅ Respaldo de 2,2 MB cifrado, 100 s, artefacto con caducidad automática a 35 días. Descifrado y SHA-256 verificados. |
+
+## 9. Prueba de restauración (Paso 3) — ejecutada
+
+**Ambiente de prueba / segunda instancia:** Supabase completo en Docker
+(entorno local del repositorio), con el esquema `public` vaciado para simular
+un proyecto nuevo (preparación fuera del tiempo medido).
+
+**Procedimiento:** descargar el artefacto del run 45743269580 → descifrar y
+verificar SHA-256 → restaurar roles, esquema y datos → contar filas.
+
+| Fecha | Respaldo usado | Inicio | Fin | Tiempo real | RTO objetivo | ¿Cumple? |
+|---|---|---|---|---|---|---|
+| 2026-11-25 | 21:34:16 (hora de Lima) | 21:48:28 | 21:48:36 | **7,7 s** | 1 h | ✅ |
+
+Desglose: descarga 2,5 s · descifrado y verificación ~1 s · restauración de
+roles, esquema y datos ~3 s · conteo ~1 s.
+
+**Verificación de datos** (filas restauradas = filas del respaldo = filas en
+producción al momento de la prueba): `reporte` 70 · `ubicacion` 1 894 ·
+`persona` 3 · `sesion_usuario` 67 748 · `codigo_otp` 4 · `tipo_incidencia` 7 ·
+`estado_reporte` 4 · `operador_central` 2 · `reniec_cache` 3 ·
+`cuenta_soporte` 1 · `configuracion_sistema` 1. **Pérdida de datos real: 0**
+(sin cambios en producción entre el respaldo y la prueba).
+
+**Segunda instancia funcionando con los datos restaurados:**
+- API REST: devuelve los 70 reportes y los 7 tipos de incidencia.
+- Edge Function `security`: con un DNI que no existe responde "DNI no
+  encontrado"; con un DNI **restaurado** responde "Contraseña incorrecta"
+  (encuentra a la persona en los datos restaurados).
+
+**Observaciones:**
+- El RTO medido cubre solo la base de datos. En un desastre real se suman
+  crear el proyecto, cargar secretos, desplegar funciones y, si cambia la URL,
+  publicar un APK nuevo (escenario E, RTO 6 h).
+- `sesion_usuario` tiene 67 748 filas, casi todo el tamaño del respaldo:
+  parecen sesiones de las pruebas de carga. Conviene limpiarlas.
+- Las tablas vacías de `storage` y `auth` se omiten al restaurar (sin pérdida
+  de datos), porque el entorno local no tiene Storage activado.
 
 ## 10. Mejoras propuestas
 
